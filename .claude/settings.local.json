@@ -1,0 +1,16 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(mklink:*)",
+      "Bash(python:*)",
+      "Bash(pip install:*)",
+      "Bash(nvidia-smi:*)",
+      "Bash(nvcc:*)",
+      "Bash(pip uninstall:*)",
+      "Bash(cd:*)",
+      "Bash(dir:*)",
+      "Bash(findstr:*)",
+      "Bash(ls:*)"
+    ]
+  }
+}

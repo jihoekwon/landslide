@@ -1,0 +1,157 @@
+"""
+Check time step stability criteria for SPH simulation.
+
+SPH stability conditions:
+1. CFL condition: Δt ≤ C_CFL * h / (c + v_max)
+2. Viscous condition: Δt ≤ C_visc * h² * ρ / μ
+3. Force condition: Δt ≤ C_f * sqrt(h / |a_max|)
+4. Body force condition: Δt ≤ sqrt(h / g)
+"""
+
+import numpy as np
+
+def analyze_stability():
+    print("=" * 70)
+    print("SPH TIME STEP STABILITY ANALYSIS")
+    print("=" * 70)
+
+    # Current simulation parameters
+    h = 15.0        # Smoothing length [m]
+    c0 = 50.0       # Speed of sound [m/s]
+    dt = 0.005      # Current time step [s]
+    rho0 = 2000.0   # Reference density [kg/m³]
+    mu = 100.0      # Dynamic viscosity [Pa·s]
+    g = 9.81        # Gravity [m/s²]
+
+    # Observed values from simulation
+    v_max_observed = 19.0   # Max velocity observed [m/s]
+    a_max_observed = 15.0   # Estimated max acceleration [m/s²]
+
+    # Safety factors (typical values)
+    C_CFL = 0.25    # CFL safety factor (0.25 ~ 0.4)
+    C_visc = 0.125  # Viscous safety factor
+    C_force = 0.25  # Force safety factor
+
+    print("\n[SIMULATION PARAMETERS]")
+    print(f"  Smoothing length (h):    {h} m")
+    print(f"  Speed of sound (c0):     {c0} m/s")
+    print(f"  Current time step (dt):  {dt} s")
+    print(f"  Reference density (ρ0):  {rho0} kg/m³")
+    print(f"  Dynamic viscosity (μ):   {mu} Pa·s")
+    print(f"  Gravity (g):             {g} m/s²")
+    print(f"  Max velocity observed:   {v_max_observed} m/s")
+
+    print("\n" + "=" * 70)
+    print("STABILITY CONDITIONS")
+    print("=" * 70)
+
+    # 1. CFL Condition
+    # Δt_CFL ≤ C_CFL * h / (c + v_max)
+    dt_CFL = C_CFL * h / (c0 + v_max_observed)
+    CFL_ratio = dt / dt_CFL
+
+    print(f"\n[1] CFL CONDITION (Courant-Friedrichs-Lewy)")
+    print(f"    Formula: Δt ≤ C_CFL × h / (c + v_max)")
+    print(f"    Δt_CFL = {C_CFL} × {h} / ({c0} + {v_max_observed})")
+    print(f"    Δt_CFL = {dt_CFL:.6f} s")
+    print(f"    Current dt / Δt_CFL = {CFL_ratio:.2f}")
+    if CFL_ratio <= 1.0:
+        print(f"    [OK] SATISFIED (ratio <= 1.0)")
+    else:
+        print(f"    [FAIL] VIOLATED! (ratio > 1.0)")
+
+    # Courant number
+    Co = (c0 + v_max_observed) * dt / h
+    print(f"    Courant number Co = (c + v_max) × dt / h = {Co:.3f}")
+    print(f"    (Should be < {1/C_CFL:.1f} for stability)")
+
+    # 2. Viscous Condition
+    # Δt_visc ≤ C_visc * h² * ρ / μ
+    nu = mu / rho0  # Kinematic viscosity
+    dt_visc = C_visc * h**2 * rho0 / mu
+    visc_ratio = dt / dt_visc
+
+    print(f"\n[2] VISCOUS CONDITION")
+    print(f"    Formula: Δt ≤ C_visc × h² × ρ / μ")
+    print(f"    Kinematic viscosity ν = μ/ρ = {nu:.4f} m²/s")
+    print(f"    Δt_visc = {C_visc} × {h}² × {rho0} / {mu}")
+    print(f"    Δt_visc = {dt_visc:.6f} s")
+    print(f"    Current dt / Δt_visc = {visc_ratio:.4f}")
+    if visc_ratio <= 1.0:
+        print(f"    ✓ SATISFIED (ratio ≤ 1.0)")
+    else:
+        print(f"    ✗ VIOLATED! (ratio > 1.0)")
+
+    # 3. Body Force Condition (gravity)
+    # Δt_body ≤ sqrt(h / g)
+    dt_body = np.sqrt(h / g)
+    body_ratio = dt / dt_body
+
+    print(f"\n[3] BODY FORCE CONDITION (Gravity)")
+    print(f"    Formula: Δt ≤ √(h / g)")
+    print(f"    Δt_body = √({h} / {g})")
+    print(f"    Δt_body = {dt_body:.6f} s")
+    print(f"    Current dt / Δt_body = {body_ratio:.4f}")
+    if body_ratio <= 1.0:
+        print(f"    ✓ SATISFIED (ratio ≤ 1.0)")
+    else:
+        print(f"    ✗ VIOLATED! (ratio > 1.0)")
+
+    # 4. Acceleration/Force Condition
+    # Δt_force ≤ C_f * sqrt(h / a_max)
+    dt_force = C_force * np.sqrt(h / a_max_observed)
+    force_ratio = dt / dt_force
+
+    print(f"\n[4] ACCELERATION CONDITION")
+    print(f"    Formula: Δt ≤ C_f × √(h / a_max)")
+    print(f"    Δt_force = {C_force} × √({h} / {a_max_observed})")
+    print(f"    Δt_force = {dt_force:.6f} s")
+    print(f"    Current dt / Δt_force = {force_ratio:.4f}")
+    if force_ratio <= 1.0:
+        print(f"    ✓ SATISFIED (ratio ≤ 1.0)")
+    else:
+        print(f"    ✗ VIOLATED! (ratio > 1.0)")
+
+    # Combined condition
+    dt_min = min(dt_CFL, dt_visc, dt_body, dt_force)
+    limiting_condition = ["CFL", "Viscous", "Body Force", "Acceleration"][
+        [dt_CFL, dt_visc, dt_body, dt_force].index(dt_min)
+    ]
+
+    print("\n" + "=" * 70)
+    print("SUMMARY")
+    print("=" * 70)
+    print(f"\n  Condition          Δt_limit (s)    dt/Δt_limit   Status")
+    print(f"  " + "-" * 60)
+    print(f"  CFL                {dt_CFL:.6f}       {CFL_ratio:.4f}        {'✓' if CFL_ratio <= 1 else '✗'}")
+    print(f"  Viscous            {dt_visc:.6f}       {visc_ratio:.4f}        {'✓' if visc_ratio <= 1 else '✗'}")
+    print(f"  Body Force         {dt_body:.6f}       {body_ratio:.4f}        {'✓' if body_ratio <= 1 else '✗'}")
+    print(f"  Acceleration       {dt_force:.6f}       {force_ratio:.4f}        {'✓' if force_ratio <= 1 else '✗'}")
+    print(f"  " + "-" * 60)
+    print(f"  MINIMUM            {dt_min:.6f}       {dt/dt_min:.4f}        (Limited by: {limiting_condition})")
+
+    print(f"\n  Current dt = {dt} s")
+    print(f"  Recommended max dt = {dt_min:.6f} s")
+
+    if dt <= dt_min:
+        print(f"\n  ✓ OVERALL: TIME STEP IS STABLE")
+    else:
+        print(f"\n  ✗ OVERALL: TIME STEP MAY BE UNSTABLE")
+        print(f"     Reduce dt to at most {dt_min:.6f} s")
+
+    # Additional analysis: What if velocity increases?
+    print("\n" + "=" * 70)
+    print("SENSITIVITY ANALYSIS (CFL vs Max Velocity)")
+    print("=" * 70)
+    print(f"\n  v_max (m/s)    Δt_CFL (s)    Current dt OK?")
+    print(f"  " + "-" * 45)
+    for v in [10, 15, 20, 25, 30]:
+        dt_cfl_v = C_CFL * h / (c0 + v)
+        ok = "✓" if dt <= dt_cfl_v else "✗"
+        print(f"  {v:<12}   {dt_cfl_v:.6f}      {ok}")
+
+    return dt_min
+
+
+if __name__ == '__main__':
+    analyze_stability()
