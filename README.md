@@ -14,6 +14,22 @@ GPU parallel computing via CuPy enables efficient calculation of thousands of pa
 
 ---
 
+## Sample Results
+
+### 3D Animation
+
+![Landslide 3D Animation](irwon_landslide_3d.gif)
+
+*60-second simulation of debris flow on Daeomsan terrain. Color represents particle velocity (m/s).*
+
+### Entrainment Analysis
+
+![Entrainment Analysis](entrainment_2panel.png)
+
+*Top panel: Velocity and runout distance over time. Bottom panel: Slope angle, cumulative entrainment volume, and sediment concentration evolution.*
+
+---
+
 ## 1. Depth-Averaged Model
 
 ### 1.1 Governing Equations
