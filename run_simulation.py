@@ -115,6 +115,7 @@ def main():
     height_data = np.full((n_frames, max_particles), np.nan, dtype=np.float32)
     density_data = np.full((n_frames, max_particles), np.nan, dtype=np.float32)
     pressure_data = np.full((n_frames, max_particles), np.nan, dtype=np.float32)
+    concentration_data = np.full((n_frames, max_particles), np.nan, dtype=np.float32)
 
     for i, state in enumerate(sim.history):
         times[i] = state['time']
@@ -127,6 +128,7 @@ def main():
         height_data[i, :n] = state['height']
         density_data[i, :n] = state['density']
         pressure_data[i, :n] = state.get('pressure', np.nan)
+        concentration_data[i, :n] = state.get('concentration', np.nan)
 
     # Save to npz file
     output_file = 'D:/Claude/landslide/simulation_results.npz'
@@ -141,6 +143,7 @@ def main():
         height=height_data,
         density=density_data,
         pressure=pressure_data,
+        concentration=concentration_data,
         # Terrain data
         terrain=terrain,
         # Metadata
@@ -155,7 +158,12 @@ def main():
         h=sim.h,
         rho0=sim.rho0,
         c0=sim.c0,
-        gamma=sim.gamma
+        gamma=sim.gamma,
+        # Entrainment parameters
+        C_init=sim.C_init,
+        rho_s=sim.rho_s,
+        rho_w=sim.rho_w,
+        phi_bed=sim.phi_bed
     )
 
     print(f"Results saved to {output_file}")

@@ -76,6 +76,10 @@ class SPHParticlesGPU:
         self.terrain_grad_y = cp.zeros(n_particles, dtype=cp.float32)
         self.height = cp.zeros(n_particles, dtype=cp.float32)
 
+        # Entrainment (Takahashi model)
+        self.concentration = cp.zeros(n_particles, dtype=cp.float32)  # solid volume concentration
+        self.slope = cp.zeros(n_particles, dtype=cp.float32)  # local slope angle (radians)
+
         self.active = cp.ones(n_particles, dtype=cp.bool_)
 
 
@@ -117,6 +121,16 @@ class SPHSimulatorGPU:
         # Time/limits
         self.dt = 0.005
         self.v_max = 30.0
+
+        # Entrainment parameters (Takahashi 2007 model)
+        self.entrainment_enabled = True
+        self.rho_s = 2650.0  # solid particle density (kg/m³)
+        self.rho_w = 1000.0  # water density (kg/m³)
+        self.phi_bed = 35.0  # bed material friction angle (degrees)
+        self.C_max = 0.65  # maximum packing concentration
+        self.C_init = 0.4  # initial concentration (below C_eq for entrainment)
+        self.delta_e = 0.0007  # erosion coefficient (Takahashi: 0.0007~0.01)
+        self.delta_d = 0.01  # deposition coefficient (Takahashi: 0.01~0.05)
 
         self.particles = None
         self.time = 0.0
@@ -175,6 +189,9 @@ class SPHSimulatorGPU:
         p.mass = cp.full(n_particles, self.rho0 * particle_area * thickness, dtype=cp.float32)
         p.density = cp.full(n_particles, self.rho0, dtype=cp.float32)
 
+        # Initialize concentration for entrainment model
+        p.concentration = cp.full(n_particles, self.C_init, dtype=cp.float32)
+
         self._update_terrain_gradients()
         self._save_state()
 
@@ -190,6 +207,115 @@ class SPHSimulatorGPU:
 
         p.terrain_grad_x = self.terrain_grad_x_grid[row_idx, col_idx]
         p.terrain_grad_y = self.terrain_grad_y_grid[row_idx, col_idx]
+
+        # Calculate local slope (radians)
+        slope_mag = cp.sqrt(p.terrain_grad_x**2 + p.terrain_grad_y**2)
+        p.slope = cp.arctan(slope_mag)
+
+    def _compute_entrainment(self):
+        """Compute entrainment/deposition using Takahashi (2007) original model.
+
+        Takahashi equilibrium concentration:
+            C_eq = rho_w * tan(theta) / [(rho_s - rho_w) * (tan(phi) - tan(theta))]
+
+        Takahashi (2007) erosion/deposition rates:
+            Erosion (C < C_eq):    i_e = delta_e * C_eq * v
+            Deposition (C > C_eq): i_d = delta_d * C * v * (1 - tan(theta)/tan(phi))
+
+        where:
+            theta = bed slope angle
+            phi = internal friction angle of bed material
+            C_eq = equilibrium sediment concentration
+            C = current sediment concentration
+            v = flow velocity
+
+        Physical meaning of (1 - tan(theta)/tan(phi)):
+            - theta -> phi (steep): factor -> 0, no deposition (unstable slope)
+            - theta -> 0 (flat): factor -> 1, maximum deposition
+        """
+        if not self.entrainment_enabled:
+            return
+
+        p = self.particles
+
+        # Get slope angle
+        theta = p.slope  # radians
+
+        # Compute tan values
+        tan_theta = cp.tan(theta)
+        tan_phi = cp.tan(cp.float32(np.radians(self.phi_bed)))
+
+        # Equilibrium concentration (Takahashi formula)
+        # C_eq = rho_w * tan_theta / [(rho_s - rho_w) * (tan_phi - tan_theta)]
+        denominator = (self.rho_s - self.rho_w) * (tan_phi - tan_theta)
+
+        # Avoid division by zero and negative values (when theta > phi, no equilibrium)
+        valid_slope = (tan_theta < tan_phi) & (theta > 0.01)
+        denominator_safe = cp.where(valid_slope, cp.maximum(denominator, 1e-6), 1.0)
+
+        C_eq = self.rho_w * tan_theta / denominator_safe
+        C_eq = cp.where(valid_slope, C_eq, 0.0)
+
+        # Limit C_eq to maximum packing
+        C_eq = cp.minimum(C_eq, self.C_max)
+
+        # Current concentration and speed
+        C = p.concentration
+        speed = cp.sqrt(p.vx**2 + p.vy**2)
+
+        # Takahashi (2007) original erosion/deposition rates
+        # Erosion: i_e = delta_e * C_eq * v  (when C < C_eq)
+        # Deposition: i_d = delta_d * C * v * (1 - tan_theta/tan_phi)  (when C > C_eq)
+
+        is_eroding = C < C_eq
+
+        # Erosion rate (m/s) - bed lowering rate
+        erosion_rate = self.delta_e * C_eq * speed
+
+        # Deposition rate (m/s) - bed rising rate
+        # Factor (1 - tan_theta/tan_phi): no deposition on steep slopes
+        slope_factor = cp.maximum(1.0 - tan_theta / tan_phi, 0.0)
+        deposition_rate = self.delta_d * C * speed * slope_factor
+
+        # Apply only to active particles and valid slopes
+        C_bed = self.C_max
+
+        erosion_rate = cp.where(p.active & valid_slope, erosion_rate, 0.0)
+        deposition_rate = cp.where(p.active & valid_slope, deposition_rate, 0.0)
+
+        # Update depth (volume conservation)
+        # Erosion: bed lowers by i_e, flow gains volume i_e
+        # Deposition: bed rises by i_d, flow loses volume i_d
+        # dh = +i_e * dt (erosion) or -i_d * dt (deposition)
+        dh = cp.where(is_eroding,
+                      erosion_rate * self.dt,
+                      -deposition_rate * self.dt)
+
+        # Update height
+        h_old = p.height.copy()
+        p.height += dh
+        p.height = cp.maximum(p.height, 0.01)
+
+        # Update concentration using mass conservation
+        # Erosion: bed material (C_bed) enters flow
+        #   d(h*C) = +C_bed * i_e * dt
+        # Deposition: flow material settles and compacts to C_bed on bed
+        #   d(h*C) = -C_bed * i_d * dt (solids deposited at bed concentration)
+        mass_solid_old = h_old * C
+
+        # Both erosion and deposition involve C_bed (bed packing concentration)
+        mass_change = cp.where(is_eroding,
+                               C_bed * erosion_rate * self.dt,
+                               -C_bed * deposition_rate * self.dt)
+
+        mass_solid_new = mass_solid_old + mass_change
+        mass_solid_new = cp.maximum(mass_solid_new, 0.0)
+
+        # New concentration
+        C_new = mass_solid_new / p.height
+        C_new = cp.clip(C_new, 0.0, self.C_max)
+
+        p.concentration = cp.where(p.active, C_new, p.concentration)
 
     def _compute_distance_matrix(self):
         """Compute pairwise distances (N x N matrix on GPU)."""
@@ -408,6 +534,9 @@ class SPHSimulatorGPU:
         p.height += 0.5 * self.dt * p.dh_dt
         p.height = cp.maximum(p.height, 0.01)
 
+        # Entrainment/deposition (Takahashi model)
+        self._compute_entrainment()
+
         self._compute_pressure()
         self._compute_forces_vectorized()
 
@@ -443,6 +572,7 @@ class SPHSimulatorGPU:
             'height': cp.asnumpy(p.height[active]),
             'density': cp.asnumpy(p.density[active]),
             'pressure': cp.asnumpy(p.pressure[active]),
+            'concentration': cp.asnumpy(p.concentration[active]),
             'n_active': int(cp.sum(active)),
             'n_total': p.n
         })
