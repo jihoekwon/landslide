@@ -81,19 +81,23 @@ def create_3d_animation(data, output_file='irwon_landslide_3d.gif'):
     speed_max = max(all_speeds) if all_speeds else 1.0
     print(f"  Speed range: 0 ~ {speed_max:.2f} m/s (fixed)")
 
-    # Figure setup with gridspec for persistent colorbar
+    # Figure setup with tight layout and thin colorbar
     from matplotlib.gridspec import GridSpec
     import matplotlib.cm as cm
+    from mpl_toolkits.axes_grid1 import make_axes_locatable
 
-    fig = plt.figure(figsize=(14, 10))
-    gs = GridSpec(1, 2, width_ratios=[20, 1], wspace=0.05)
-    ax = fig.add_subplot(gs[0], projection='3d')
-    cax = fig.add_subplot(gs[1])
+    fig = plt.figure(figsize=(12, 9))
+    ax = fig.add_subplot(111, projection='3d')
 
-    # Create fixed colorbar (will not change during animation)
+    # Adjust subplot to reduce whitespace
+    fig.subplots_adjust(left=0.02, right=0.92, top=0.95, bottom=0.05)
+
+    # Create thin colorbar attached to the right side
     norm = plt.Normalize(vmin=0, vmax=speed_max)
     sm = cm.ScalarMappable(cmap='plasma', norm=norm)
     sm.set_array([])
+    # Position colorbar: [left, bottom, width, height] in figure coordinates
+    cax = fig.add_axes([0.93, 0.15, 0.015, 0.7])
     cbar = fig.colorbar(sm, cax=cax, label='Speed (m/s)')
 
     def get_particle_elevation(x_arr, y_arr):

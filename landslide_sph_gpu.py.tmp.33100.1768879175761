@@ -106,7 +106,7 @@ class SPHSimulatorGPU:
 
         # Rheology
         self.mu = 100.0
-        self.tau_y = 500.0
+        self.tau_y = 50.0
         self.mu_b = 0.1
         self.xi = 200.0
 
@@ -301,11 +301,6 @@ class SPHSimulatorGPU:
 
         approaching_mask = mask & (vr_dot < 0)
 
-        # Use density = rho0 * h for viscosity calculations
-        rho_i = p.density[:, None]  # = rho0 * h_i
-        rho_j = p.density[None, :]  # = rho0 * h_j
-        m_j = p.mass[None, :]
-
         rho_avg = 0.5 * (rho_i + rho_j)
         r_sq = r**2 + 0.01 * self.h**2
         mu_art = self.h * vr_dot / r_sq
@@ -380,21 +375,21 @@ class SPHSimulatorGPU:
         self._update_terrain_gradients()
 
     def step(self):
-        """Perform one simulation step (depth-averaged)."""
+        """Perform one simulation step."""
         p = self.particles
 
         if not cp.any(p.active):
             self.time += self.dt
             return 0.0
 
-        # Compute dh/dt (depth-averaged continuity)
-        self._compute_dh_dt_vectorized()
+        # Compute drho/dt
+        self._compute_drho_dt_vectorized()
 
-        # Update height (half step)
-        p.height += 0.5 * self.dt * p.dh_dt
-        p.height = cp.maximum(p.height, 0.01)  # minimum depth
+        # Update density (half step)
+        p.density += 0.5 * self.dt * p.drho_dt
+        p.density = cp.maximum(p.density, 0.5 * self.rho0)
 
-        # Compute pressure (hydrostatic)
+        # Compute pressure
         self._compute_pressure()
 
         # Compute forces
@@ -403,10 +398,10 @@ class SPHSimulatorGPU:
         # Integrate
         self._integrate()
 
-        # Second half (leapfrog)
-        self._compute_dh_dt_vectorized()
-        p.height += 0.5 * self.dt * p.dh_dt
-        p.height = cp.maximum(p.height, 0.01)
+        # Second half
+        self._compute_drho_dt_vectorized()
+        p.density += 0.5 * self.dt * p.drho_dt
+        p.density = cp.maximum(p.density, 0.5 * self.rho0)
 
         self._compute_pressure()
         self._compute_forces_vectorized()

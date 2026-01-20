@@ -4,7 +4,7 @@ GPU-accelerated landslide simulation using Smoothed Particle Hydrodynamics (SPH)
 
 ## Overview
 
-This project simulates landslide dynamics using real DEM data from the Irwon region in South Korea. The simulation leverages GPU parallel computing via CuPy to efficiently calculate thousands of particles in near real-time.
+This project simulates landslide dynamics using real DEM data from Daeomsan (대모산), Irwon-dong, Gangnam-gu, Seoul, South Korea. The simulation leverages GPU parallel computing via CuPy to efficiently calculate thousands of particles in near real-time.
 
 ## Physical Models
 
@@ -137,7 +137,7 @@ landslide/
 ├── visualize_results.py      # Result visualization and animation
 ├── run_3d_animation.py       # 3D animation generation (alternative)
 │
-├── irwon.dem                 # Irwon region DEM raw data
+├── irwon.dem                 # Irwon-dong (Daeomsan) DEM raw data
 ├── irwon_terrain.npy         # Preprocessed terrain array
 ├── irwon_terrain_crop.npy    # Cropped terrain array
 ├── irwon_terrain_hires.npy   # High-resolution terrain array
@@ -163,7 +163,7 @@ landslide/
 python run_simulation.py
 ```
 
-- Loads Irwon region DEM
+- Loads Irwon-dong (Daeomsan) DEM
 - Initializes particles in the collapse area
 - Runs 60-second simulation
 - Saves results to `simulation_results.npz`

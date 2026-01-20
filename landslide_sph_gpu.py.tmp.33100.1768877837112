@@ -68,8 +68,8 @@ class SPHParticlesGPU:
         self.ay = cp.zeros(n_particles, dtype=cp.float32)
 
         self.mass = cp.zeros(n_particles, dtype=cp.float32)
-        self.density = cp.zeros(n_particles, dtype=cp.float32)  # kept for compatibility
-        self.dh_dt = cp.zeros(n_particles, dtype=cp.float32)  # depth change rate
+        self.density = cp.zeros(n_particles, dtype=cp.float32)
+        self.drho_dt = cp.zeros(n_particles, dtype=cp.float32)
         self.pressure = cp.zeros(n_particles, dtype=cp.float32)
 
         self.terrain_grad_x = cp.zeros(n_particles, dtype=cp.float32)
@@ -106,7 +106,7 @@ class SPHSimulatorGPU:
 
         # Rheology
         self.mu = 100.0
-        self.tau_y = 500.0
+        self.tau_y = 50.0
         self.mu_b = 0.1
         self.xi = 200.0
 
@@ -203,14 +203,10 @@ class SPHSimulatorGPU:
 
         return r, dx, dy
 
-    def _compute_dh_dt_vectorized(self):
-        """Compute dh/dt using depth-averaged continuity equation.
-
-        Depth-averaged continuity: dh/dt + h * div(v) = 0
-        SPH form: dh_i/dt = sum_j Omega_j * (v_i - v_j) . grad_W_ij
-        where Omega_j = m_j / (rho0 * h_j) is particle area
-        """
+    def _compute_drho_dt_vectorized(self):
+        """Compute drho/dt using vectorized operations (no race condition)."""
         p = self.particles
+        n = p.n
 
         # Distance matrix
         r, dx, dy = self._compute_distance_matrix()
@@ -229,27 +225,20 @@ class SPHSimulatorGPU:
         active_mask = p.active[:, None] & p.active[None, :]
         mask = mask & active_mask
 
-        # Particle area: Omega_j = m_j / (rho0 * h_j)
-        h_j = cp.maximum(p.height[None, :], 0.01)  # avoid division by zero
-        Omega_j = p.mass[None, :] / (self.rho0 * h_j)
-
-        # Contribution: Omega_j * (v_i - v_j) . gradW
-        contribution = Omega_j * (dvx * gradWx + dvy * gradWy)
+        # Contribution: m_j * (v_i - v_j) . gradW
+        # For each i, sum over j
+        contribution = p.mass[None, :] * (dvx * gradWx + dvy * gradWy)
         contribution = cp.where(mask, contribution, 0.0)
 
-        # Sum contributions for each particle i
-        p.dh_dt = cp.sum(contribution, axis=1)
+        # Sum contributions for each particle i (no race: each i gets its own sum)
+        p.drho_dt = cp.sum(contribution, axis=1)
 
     def _compute_pressure(self):
-        """Compute depth-integrated hydrostatic pressure.
-
-        P = (1/2) * rho * g * h^2
-        """
+        """Compute pressure using Tait EOS."""
         p = self.particles
-        h_safe = cp.maximum(p.height, 0.01)
-        p.pressure = 0.5 * self.rho0 * self.g * h_safe**2
-        # Also update density for compatibility (rho_2D = rho0 * h)
-        p.density = self.rho0 * h_safe
+        B = self.rho0 * self.c0**2 / self.gamma
+        p.pressure = B * ((p.density / self.rho0)**self.gamma - 1.0)
+        p.pressure = cp.maximum(p.pressure, 0.0)
 
     def _compute_forces_vectorized(self):
         """Compute forces using vectorized operations."""
@@ -273,20 +262,17 @@ class SPHSimulatorGPU:
         active_mask = p.active[:, None] & p.active[None, :]
         mask = mask & active_mask
 
-        # --- Pressure force (depth-averaged) ---
-        # Depth-averaged momentum: dv/dt = -g * grad(h) + other terms
-        # SPH form: a_pressure = -g * sum_j Omega_j * (h_i + h_j)/2 * grad_W_ij
-        h_i = p.height[:, None]  # N x 1
-        h_j = p.height[None, :]  # 1 x N
-        h_j_safe = cp.maximum(h_j, 0.01)
+        # --- Pressure force ---
+        # -m_j * (P_i/rho_i^2 + P_j/rho_j^2) * gradW
+        rho_i = p.density[:, None]  # N x 1
+        rho_j = p.density[None, :]  # 1 x N
+        P_i = p.pressure[:, None]
+        P_j = p.pressure[None, :]
+        m_j = p.mass[None, :]
 
-        # Particle area: Omega_j = m_j / (rho0 * h_j)
-        Omega_j = p.mass[None, :] / (self.rho0 * h_j_safe)
-
-        # Symmetric pressure gradient
-        h_avg = 0.5 * (h_i + h_j)
-        pressure_force_x = -self.g * Omega_j * h_avg * gradWx
-        pressure_force_y = -self.g * Omega_j * h_avg * gradWy
+        pressure_term = P_i / (rho_i**2) + P_j / (rho_j**2)
+        pressure_force_x = -m_j * pressure_term * gradWx
+        pressure_force_y = -m_j * pressure_term * gradWy
 
         pressure_force_x = cp.where(mask, pressure_force_x, 0.0)
         pressure_force_y = cp.where(mask, pressure_force_y, 0.0)
@@ -300,11 +286,6 @@ class SPHSimulatorGPU:
         vr_dot = dvx * dx + dvy * dy
 
         approaching_mask = mask & (vr_dot < 0)
-
-        # Use density = rho0 * h for viscosity calculations
-        rho_i = p.density[:, None]  # = rho0 * h_i
-        rho_j = p.density[None, :]  # = rho0 * h_j
-        m_j = p.mass[None, :]
 
         rho_avg = 0.5 * (rho_i + rho_j)
         r_sq = r**2 + 0.01 * self.h**2
@@ -380,21 +361,21 @@ class SPHSimulatorGPU:
         self._update_terrain_gradients()
 
     def step(self):
-        """Perform one simulation step (depth-averaged)."""
+        """Perform one simulation step."""
         p = self.particles
 
         if not cp.any(p.active):
             self.time += self.dt
             return 0.0
 
-        # Compute dh/dt (depth-averaged continuity)
-        self._compute_dh_dt_vectorized()
+        # Compute drho/dt
+        self._compute_drho_dt_vectorized()
 
-        # Update height (half step)
-        p.height += 0.5 * self.dt * p.dh_dt
-        p.height = cp.maximum(p.height, 0.01)  # minimum depth
+        # Update density (half step)
+        p.density += 0.5 * self.dt * p.drho_dt
+        p.density = cp.maximum(p.density, 0.5 * self.rho0)
 
-        # Compute pressure (hydrostatic)
+        # Compute pressure
         self._compute_pressure()
 
         # Compute forces
@@ -403,10 +384,10 @@ class SPHSimulatorGPU:
         # Integrate
         self._integrate()
 
-        # Second half (leapfrog)
-        self._compute_dh_dt_vectorized()
-        p.height += 0.5 * self.dt * p.dh_dt
-        p.height = cp.maximum(p.height, 0.01)
+        # Second half
+        self._compute_drho_dt_vectorized()
+        p.density += 0.5 * self.dt * p.drho_dt
+        p.density = cp.maximum(p.density, 0.5 * self.rho0)
 
         self._compute_pressure()
         self._compute_forces_vectorized()
