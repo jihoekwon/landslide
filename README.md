@@ -1,90 +1,208 @@
 # Landslide SPH Simulation
 
-GPU 가속화된 SPH(Smoothed Particle Hydrodynamics) 기반 산사태 시뮬레이션 프로젝트입니다.
+GPU-accelerated landslide simulation using Smoothed Particle Hydrodynamics (SPH) method.
 
-## 개요
+## Overview
 
-이원(Irwon) 지역의 실제 DEM 데이터를 사용하여 산사태 거동을 시뮬레이션합니다. CuPy를 활용한 GPU 병렬 연산으로 수천 개의 입자를 실시간에 가깝게 계산합니다.
+This project simulates landslide dynamics using real DEM data from the Irwon region in South Korea. The simulation leverages GPU parallel computing via CuPy to efficiently calculate thousands of particles in near real-time.
 
-## 주요 기능
+## Physical Models
 
-- **GPU 가속화**: CuPy 기반 벡터화 연산으로 고속 시뮬레이션
-- **SPH 유체역학**: Cubic spline 커널, 인공 점성, Tait 상태방정식
-- **유변학 모델**: Voellmy 바닥 마찰 + Bingham 항복응력
-- **3D 시각화**: 위성 텍스처 오버레이, GIF 애니메이션 생성
+### SPH (Smoothed Particle Hydrodynamics)
 
-## 파일 구조
+SPH is a mesh-free Lagrangian method that discretizes the continuum into particles. Each particle carries physical properties (mass, velocity, density) and interacts with neighbors through a smoothing kernel.
+
+**Kernel Function**: Cubic spline kernel
+
+```
+W(r,h) = α × { 1 - 1.5q² + 0.75q³    (0 ≤ q < 1)
+             { 0.25(2-q)³             (1 ≤ q < 2)
+             { 0                       (q ≥ 2)
+
+where q = r/h, α = 10/(7πh²)
+```
+
+**Continuity Equation** (density evolution):
+
+```
+dρ/dt = Σⱼ mⱼ(vᵢ - vⱼ)·∇Wᵢⱼ
+```
+
+### Equation of State (Tait EOS)
+
+Pressure is computed using the weakly compressible Tait equation:
+
+```
+P = B[(ρ/ρ₀)^γ - 1]
+
+where B = ρ₀c₀²/γ
+```
+
+| Parameter | Value | Description |
+|-----------|-------|-------------|
+| ρ₀ | 2000 kg/m³ | Reference density |
+| c₀ | 50 m/s | Speed of sound |
+| γ | 7 | Tait exponent |
+| B | 714,286 Pa | Pressure coefficient |
+
+### Voellmy Friction Model
+
+The basal friction combines Coulomb friction and turbulent resistance:
+
+```
+τ = μ_b·σ_n + ρg·v²/ξ
+```
+
+Or in friction coefficient form:
+
+```
+friction = μ_b + v²/ξ
+```
+
+| Parameter | Value | Description |
+|-----------|-------|-------------|
+| μ_b | 0.1 | Coulomb friction coefficient (~6° friction angle) |
+| ξ | 200 m/s² | Turbulent coefficient |
+
+**Physical Interpretation**:
+- **μ_b term**: Dominates at low velocities; represents particle-bed contact friction
+- **v²/ξ term**: Dominates at high velocities; represents turbulent energy dissipation from particle collisions and vortex generation
+
+**Note**: The Voellmy model is phenomenological, originally derived from open-channel hydraulics (Chézy formula). The turbulent coefficient ξ is typically calibrated via back-analysis of real events.
+
+### Bingham Rheology
+
+The debris flow is modeled as a Bingham viscoplastic fluid with yield stress:
+
+```
+τ = τ_y + μ·γ̇    (if τ > τ_y)
+γ̇ = 0            (if τ ≤ τ_y)
+```
+
+| Parameter | Value | Description |
+|-----------|-------|-------------|
+| μ | 100 Pa·s | Dynamic viscosity |
+| τ_y | 50 Pa | Yield stress |
+
+**Stop Condition**: Flow stops when shear stress falls below yield stress:
+
+```
+ρgh·sinθ < τ_y  →  Flow stops
+```
+
+**Note**: Current τ_y = 50 Pa is relatively low for typical debris flows (literature values: 100–10,000 Pa). This results in longer runout distances.
+
+### Artificial Viscosity
+
+Numerical stability is maintained using Monaghan-type artificial viscosity:
+
+```
+Πᵢⱼ = (-α_visc·c₀·μᵢⱼ + β_visc·μᵢⱼ²) / ρ̄ᵢⱼ
+
+where μᵢⱼ = h(vᵢⱼ·rᵢⱼ)/(r² + 0.01h²)  for approaching particles
+```
+
+| Parameter | Value | Description |
+|-----------|-------|-------------|
+| α_visc | 0.1 | Linear artificial viscosity |
+| β_visc | 0.1 | Quadratic artificial viscosity |
+
+### Momentum Equation
+
+The acceleration of each particle is computed as:
+
+```
+dvᵢ/dt = -Σⱼ mⱼ(Pᵢ/ρᵢ² + Pⱼ/ρⱼ²)∇Wᵢⱼ    (pressure gradient)
+       + viscous terms                      (artificial + physical viscosity)
+       - g·∇z                               (gravity along slope)
+       - friction terms                     (Voellmy + Bingham)
+```
+
+## Numerical Parameters
+
+| Parameter | Value | Description |
+|-----------|-------|-------------|
+| h | 2.5 m | Smoothing length |
+| Particle spacing | 2.5 m | Distance between particles (h) |
+| dt | 0.005 s | Time step |
+| Cutoff | 5.0 m | Neighbor search radius (2h) |
+| v_max | 30 m/s | Velocity ceiling |
+
+## File Structure
 
 ```
 landslide/
-├── landslide_sph_gpu.py      # GPU SPH 시뮬레이터 코어 모듈
-├── run_simulation.py         # 시뮬레이션 실행 스크립트
-├── visualize_results.py      # 결과 시각화 및 애니메이션 생성
-├── run_3d_animation.py       # 3D 애니메이션 생성 (대체 버전)
+├── landslide_sph_gpu.py      # GPU SPH simulator core module
+├── run_simulation.py         # Simulation execution script
+├── visualize_results.py      # Result visualization and animation
+├── run_3d_animation.py       # 3D animation generation (alternative)
 │
-├── irwon.dem                 # 이원 지역 DEM 원본 데이터
-├── irwon_terrain.npy         # 전처리된 지형 배열
-├── irwon_terrain_crop.npy    # 크롭된 지형 배열
-├── irwon_terrain_hires.npy   # 고해상도 지형 배열
+├── irwon.dem                 # Irwon region DEM raw data
+├── irwon_terrain.npy         # Preprocessed terrain array
+├── irwon_terrain_crop.npy    # Cropped terrain array
+├── irwon_terrain_hires.npy   # High-resolution terrain array
 │
-├── simulation_results.npz    # 시뮬레이션 결과 데이터
-├── simulation_progress.txt   # 시뮬레이션 진행 로그
+├── simulation_results.npz    # Simulation result data
+├── simulation_progress.txt   # Simulation progress log
 │
-├── satellite_image.png       # 위성 이미지 원본
-├── satellite_texture.png     # 지형 텍스처용 위성 이미지
+├── satellite_image.png       # Satellite image (original)
+├── satellite_texture.png     # Satellite texture for terrain
 │
-├── irwon_landslide_3d.gif    # 3D 산사태 애니메이션
-├── irwon_initial_setup.png   # 초기 입자 배치 이미지
-├── runout_distance.png       # 유출 거리 분석 그래프
+├── irwon_landslide_3d.gif    # 3D landslide animation
+├── irwon_initial_setup.png   # Initial particle setup image
+├── runout_distance.png       # Runout distance analysis plot
 │
-└── backup/                   # 이전 버전 백업
+└── backup/                   # Previous version backups
 ```
 
-## 사용법
+## Usage
 
-### 1. 시뮬레이션 실행
+### 1. Run Simulation
 
 ```bash
 python run_simulation.py
 ```
 
-- 이원 지역 DEM 로드
-- 붕괴 영역에 입자 초기화
-- 30초 시뮬레이션 수행
-- 결과를 `simulation_results.npz`에 저장
+- Loads Irwon region DEM
+- Initializes particles in the collapse area
+- Runs 60-second simulation
+- Saves results to `simulation_results.npz`
 
-### 2. 결과 시각화
+### 2. Visualize Results
 
 ```bash
 python visualize_results.py
 ```
 
-- 3D 애니메이션 GIF 생성 (`irwon_landslide_3d.gif`)
-- 유출 거리 그래프 생성 (`runout_distance.png`)
+- Generates 3D animation GIF (`irwon_landslide_3d.gif`)
+- Creates runout distance plot (`runout_distance.png`)
 
-## 시뮬레이션 파라미터
+## Output Data
 
-### SPH 파라미터
-| 파라미터 | 값 | 설명 |
-|---------|-----|------|
-| h | 2.5 m | 스무딩 길이 |
-| rho0 | 2000 kg/m³ | 기준 밀도 |
-| c0 | 50 m/s | 음속 |
-| dt | 0.005 s | 시간 간격 |
+The simulation saves the following data to `simulation_results.npz`:
 
-### 유변학 파라미터
-| 파라미터 | 값 | 설명 |
-|---------|-----|------|
-| mu | 100 Pa·s | 동점성 계수 |
-| tau_y | 50 Pa | 항복 응력 |
-| mu_b | 0.1 | 바닥 마찰 계수 |
-| xi | 200 m/s² | 난류 계수 |
+| Key | Shape | Description |
+|-----|-------|-------------|
+| `times` | (N_frames,) | Time stamps |
+| `x`, `y` | (N_frames, N_particles) | Particle positions |
+| `vx`, `vy` | (N_frames, N_particles) | Particle velocities |
+| `density` | (N_frames, N_particles) | Particle densities |
+| `pressure` | (N_frames, N_particles) | Particle pressures |
+| `height` | (N_frames, N_particles) | Particle heights |
+| `terrain` | (ny, nx) | Terrain elevation grid |
+| `rho0`, `c0`, `gamma` | scalar | SPH parameters |
 
-## 의존성
+## Coordinate System
+
+- **CRS**: TM (EPSG:5186) - Korea 2000 / Central Belt
+- **Origin**: X=203461, Y=535418
+- **Cell size**: 30 m
+
+## Dependencies
 
 - Python 3.8+
 - NumPy
-- CuPy (CUDA 필요)
+- CuPy (requires CUDA)
 - Matplotlib
 - Pillow
 - SciPy
@@ -93,21 +211,23 @@ python visualize_results.py
 pip install numpy cupy-cuda12x matplotlib pillow scipy
 ```
 
-## 좌표계
+## Performance
 
-- **좌표계**: TM (EPSG:5186)
-- **원점**: X=203461, Y=535418
-- **셀 크기**: 30m
+| Configuration | Particles | 60s Simulation | Speed |
+|---------------|-----------|----------------|-------|
+| Low resolution | ~1,800 | ~3 min | 67 steps/s |
+| High resolution | ~7,200 | ~12 min | ~17 steps/s |
 
-## 출력 예시
+## Limitations and Future Work
 
-### 3D 애니메이션
-![Landslide Animation](irwon_landslide_3d.gif)
+1. **Voellmy turbulent term**: Empirical model; consider implementing μ(I) rheology for physics-based friction
+2. **Bingham parameters**: Current τ_y is low for debris flows; calibration with field data needed
+3. **2D depth-averaged**: Vertical flow structure not resolved
+4. **No entrainment**: Bed material entrainment not modeled
 
-### 유출 거리 분석
-![Runout Distance](runout_distance.png)
+## References
 
-## 참고 문헌
-
-- Bui, H. H., et al. (2008). Lagrangian meshfree particles method (SPH) for large deformation and failure flows of geomaterial using elastic–plastic soil constitutive model.
+- Bui, H. H., et al. (2008). Lagrangian meshfree particles method (SPH) for large deformation and failure flows of geomaterial using elastic-plastic soil constitutive model.
 - Pastor, M., et al. (2009). Application of a SPH depth-integrated model to landslide run-out analysis.
+- Hungr, O. (1995). A model for the runout analysis of rapid flow slides, debris flows, and avalanches.
+- Voellmy, A. (1955). Uber die Zerstorungskraft von Lawinen (On the destructive force of avalanches).

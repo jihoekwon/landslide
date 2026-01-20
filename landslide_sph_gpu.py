@@ -423,6 +423,7 @@ class SPHSimulatorGPU:
             'vy': cp.asnumpy(p.vy[active]),
             'height': cp.asnumpy(p.height[active]),
             'density': cp.asnumpy(p.density[active]),
+            'pressure': cp.asnumpy(p.pressure[active]),
             'n_active': int(cp.sum(active)),
             'n_total': p.n
         })

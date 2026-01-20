@@ -77,7 +77,7 @@ def main():
 
     # Create arbitrary blob particles
     h = sim.h
-    particle_spacing = h / 2
+    particle_spacing = h  # 해상도 절반 (입자수 1/4)
     particles_x, particles_y = create_arbitrary_blob(plume_x, plume_y,
                                                       base_radius=75,
                                                       particle_spacing=particle_spacing)
@@ -86,7 +86,7 @@ def main():
     sim.initialize_particles_from_coords(particles_x, particles_y, x_min, y_min, thickness=5.0)
 
     # Run simulation
-    duration = 30.0
+    duration = 60.0
     save_interval = 0.2
     print(f"\nRunning {duration}s simulation...")
     start = time.time()
@@ -112,6 +112,9 @@ def main():
     y_data = np.full((n_frames, max_particles), np.nan, dtype=np.float32)
     vx_data = np.full((n_frames, max_particles), np.nan, dtype=np.float32)
     vy_data = np.full((n_frames, max_particles), np.nan, dtype=np.float32)
+    height_data = np.full((n_frames, max_particles), np.nan, dtype=np.float32)
+    density_data = np.full((n_frames, max_particles), np.nan, dtype=np.float32)
+    pressure_data = np.full((n_frames, max_particles), np.nan, dtype=np.float32)
 
     for i, state in enumerate(sim.history):
         times[i] = state['time']
@@ -121,6 +124,9 @@ def main():
         y_data[i, :n] = state['y']
         vx_data[i, :n] = state['vx']
         vy_data[i, :n] = state['vy']
+        height_data[i, :n] = state['height']
+        density_data[i, :n] = state['density']
+        pressure_data[i, :n] = state.get('pressure', np.nan)
 
     # Save to npz file
     output_file = 'D:/Claude/landslide/simulation_results.npz'
@@ -132,6 +138,9 @@ def main():
         y=y_data,
         vx=vx_data,
         vy=vy_data,
+        height=height_data,
+        density=density_data,
+        pressure=pressure_data,
         # Terrain data
         terrain=terrain,
         # Metadata
@@ -142,7 +151,11 @@ def main():
         init_y=init_y,
         duration=duration,
         save_interval=save_interval,
-        h=sim.h
+        # SPH parameters
+        h=sim.h,
+        rho0=sim.rho0,
+        c0=sim.c0,
+        gamma=sim.gamma
     )
 
     print(f"Results saved to {output_file}")
