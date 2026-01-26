@@ -86,8 +86,62 @@ class SPHParticlesGPU:
 class SPHSimulatorGPU:
     """GPU-accelerated SPH simulator using vectorized operations."""
 
-    def __init__(self, terrain, cell_size=10.0):
+    def __init__(self, terrain, cell_size=10.0,
+                 # SPH parameters
+                 h: float = 5.0,
+                 dt: float = 0.004,
+                 v_max: float = 30.0,
+                 # Physical parameters
+                 rho0: float = 2000.0,
+                 c0: float = 300.0,
+                 gamma: float = 7.0,
+                 g: float = 9.81,
+                 # Rheology
+                 mu: float = 100.0,
+                 tau_y: float = 500.0,
+                 mu_b: float = 0.1,
+                 xi: float = 200.0,
+                 alpha: float = 0.1,
+                 beta: float = 0.1,
+                 # Entrainment (Takahashi 2007)
+                 entrainment_enabled: bool = True,
+                 delta_e: float = 0.0007,
+                 delta_d: float = 0.01,
+                 rho_s: float = 2650.0,
+                 rho_w: float = 1000.0,
+                 phi_bed: float = 35.0,
+                 C_init: float = 0.4,
+                 C_max: float = 0.65):
+        """
+        Initialize SPH simulator.
+
+        Args:
+            terrain: 2D numpy array of elevation data
+            cell_size: Grid cell size in meters
+            h: SPH smoothing length (m)
+            dt: Time step (s)
+            v_max: Velocity ceiling (m/s)
+            rho0: Reference density (kg/m³)
+            c0: Speed of sound (m/s), use 10*v_max for ~1% compressibility
+            gamma: EOS exponent
+            g: Gravity (m/s²)
+            mu: Dynamic viscosity (Pa·s)
+            tau_y: Yield stress (Pa)
+            mu_b: Basal friction coefficient
+            xi: Turbulent coefficient (m/s²)
+            alpha: Artificial viscosity parameter
+            beta: Artificial viscosity parameter
+            entrainment_enabled: Enable Takahashi entrainment model
+            delta_e: Erosion coefficient
+            delta_d: Deposition coefficient
+            rho_s: Solid particle density (kg/m³)
+            rho_w: Water density (kg/m³)
+            phi_bed: Bed friction angle (degrees)
+            C_init: Initial solid concentration
+            C_max: Maximum packing concentration
+        """
         self.terrain = terrain.astype(np.float32)
+        self.terrain_grid = cp.asarray(self.terrain)
         self.cell_size = cell_size
         self.domain_width = terrain.shape[1] * cell_size
         self.domain_height = terrain.shape[0] * cell_size
@@ -98,39 +152,39 @@ class SPHSimulatorGPU:
         self.terrain_grad_y_grid = cp.asarray(grad_y.astype(np.float32))
 
         # SPH parameters
-        self.h = 2.5  # High resolution (spacing = h/2 = 1.25m)
+        self.h = h
         self.kernel = SPHKernelGPU(self.h)
         self.cutoff = 2.0 * self.h
 
         # Physical parameters
-        self.rho0 = 2000.0
-        self.c0 = 50.0
-        self.gamma = 7.0
-        self.g = 9.81
+        self.rho0 = rho0
+        self.c0 = c0
+        self.gamma = gamma
+        self.g = g
 
         # Rheology
-        self.mu = 100.0
-        self.tau_y = 500.0
-        self.mu_b = 0.1
-        self.xi = 200.0
+        self.mu = mu
+        self.tau_y = tau_y
+        self.mu_b = mu_b
+        self.xi = xi
 
         # Artificial viscosity
-        self.alpha_visc = 0.1
-        self.beta_visc = 0.1
+        self.alpha_visc = alpha
+        self.beta_visc = beta
 
         # Time/limits
-        self.dt = 0.005
-        self.v_max = 30.0
+        self.dt = dt
+        self.v_max = v_max
 
         # Entrainment parameters (Takahashi 2007 model)
-        self.entrainment_enabled = True
-        self.rho_s = 2650.0  # solid particle density (kg/m³)
-        self.rho_w = 1000.0  # water density (kg/m³)
-        self.phi_bed = 35.0  # bed material friction angle (degrees)
-        self.C_max = 0.65  # maximum packing concentration
-        self.C_init = 0.4  # initial concentration (below C_eq for entrainment)
-        self.delta_e = 0.0007  # erosion coefficient (Takahashi: 0.0007~0.01)
-        self.delta_d = 0.01  # deposition coefficient (Takahashi: 0.01~0.05)
+        self.entrainment_enabled = entrainment_enabled
+        self.rho_s = rho_s
+        self.rho_w = rho_w
+        self.phi_bed = phi_bed
+        self.C_max = C_max
+        self.C_init = C_init
+        self.delta_e = delta_e
+        self.delta_d = delta_d
 
         self.particles = None
         self.time = 0.0

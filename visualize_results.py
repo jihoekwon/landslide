@@ -1,40 +1,76 @@
 """
-Visualize SPH Landslide Simulation results from saved file.
+PyVista/VTK 기반 산사태 시뮬레이션 시각화
+
+Usage:
+    python visualize_results.py <results_npz_path> [--workers N] [--sequential]
 """
 
 import numpy as np
-import matplotlib.pyplot as plt
-from matplotlib import animation
-from matplotlib.colors import LightSource
+import pyvista as pv
 from PIL import Image
+import imageio.v3 as iio
+import sys
+import argparse
+import tempfile
+import shutil
+from pathlib import Path
+from datetime import datetime
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import subprocess
+import json
+import yaml
+
+# Offscreen 렌더링 설정
+pv.OFF_SCREEN = True
+
+# 기본 설정값
+DEFAULT_CONFIG = {
+    'title_prefix': 'Landslide Simulation',
+    'view_elev': 35.0,
+    'view_azim': 30.0,
+    'camera_distance_factor': 2.5,
+    'fps': 15,
+    'frame_skip': 1,
+    'window_width': 1200,
+    'window_height': 900,
+    'particle_size': 3,
+    'particle_cmap': 'plasma',
+    'particle_height_offset': 30,
+    'use_satellite': True,
+    'terrain_cmap': 'terrain',
+    'animation_gif': 'landslide_animation.gif',
+    'animation_video': 'landslide_animation.webm',
+}
 
 
-# ============================================================
-# VISUALIZATION SETTINGS (modify these as needed)
-# ============================================================
-VIEW_ELEV = 35          # Elevation angle (degrees)
-VIEW_AZIM = 30          # Azimuth angle (degrees)
-FPS = 10                # Frames per second for GIF
-DPI = 100               # Resolution
-PARTICLE_SIZE = 1       # Scatter point size
-PARTICLE_EDGE = False   # Draw particle edges
-EDGE_COLOR = 'black'    # Edge color
-EDGE_WIDTH = 0.3        # Edge line width
-USE_SATELLITE = True    # Use satellite texture on terrain
-SATELLITE_FILE = 'D:/Claude/landslide/satellite_texture.png'
-# ============================================================
+def log(msg: str):
+    """간단한 로깅"""
+    timestamp = datetime.now().strftime("%H:%M:%S")
+    print(f"{timestamp} | {msg}")
+    sys.stdout.flush()
 
 
-def load_results(filepath='D:/Claude/landslide/simulation_results.npz'):
-    """Load simulation results from file."""
-    data = np.load(filepath)
-    return data
+def load_visualization_config(config_path: Path) -> dict:
+    """visualization_config.yaml 로드 및 기본값 병합"""
+    config = DEFAULT_CONFIG.copy()
+
+    if config_path.exists():
+        with open(config_path, 'r', encoding='utf-8') as f:
+            user_config = yaml.safe_load(f) or {}
+        config.update(user_config)
+        log(f"  Loaded config: {config_path.name}")
+    else:
+        log(f"  Using default config (no {config_path.name} found)")
+
+    return config
 
 
-def create_3d_animation(data, output_file='irwon_landslide_3d.gif'):
-    """Create 3D animation from saved simulation data."""
+def render_frame(data_path: str, frame_idx: int, frame_data_idx: int,
+                 output_path: str, render_config: dict):
+    """PyVista로 단일 프레임 렌더링"""
 
-    # Extract data
+    # 데이터 로드
+    data = np.load(data_path, allow_pickle=True)
     terrain = data['terrain']
     cell_size = float(data['cell_size'])
     times = data['times']
@@ -43,242 +79,424 @@ def create_3d_animation(data, output_file='irwon_landslide_3d.gif'):
     y_data = data['y']
     vx_data = data['vx']
     vy_data = data['vy']
+    x_min = float(data['x_min'])
+    y_min = float(data['y_min'])
 
     ny, nx = terrain.shape
-    n_frames = len(times)
 
-    # Create mesh grid for terrain
+    # 점 좌표 생성
     x = np.arange(nx) * cell_size
     y = np.arange(ny) * cell_size
     X, Y = np.meshgrid(x, y)
 
-    # Load satellite texture if enabled
-    satellite_colors = None
-    if USE_SATELLITE:
+    # StructuredGrid 생성 - DEM X,Y축 모두 뒤집기 (terrain_processor preview와 일치)
+    grid = pv.StructuredGrid()
+    terrain_flipped = terrain[::-1, ::-1]  # Y축, X축 모두 뒤집기
+    points = np.column_stack([X.ravel(), Y.ravel(), terrain_flipped.ravel()])
+    grid.points = points
+    grid.dimensions = [nx, ny, 1]
+
+    # 위성 텍스처 로드
+    texture = None
+    satellite_file = render_config.get('satellite_file')
+    if satellite_file and Path(satellite_file).exists():
         try:
-            img = Image.open(SATELLITE_FILE)
-            # Resize to (nx, ny) for the grid points
-            img_resized = img.resize((nx, ny), Image.LANCZOS)
-            img_array = np.array(img_resized) / 255.0  # Normalize to 0-1
-            # Flip vertically to match terrain orientation
-            img_array = np.flipud(img_array)
-            # For facecolors, we need colors at cell centers (ny-1, nx-1)
-            # Average neighboring pixels
-            satellite_colors = (img_array[:-1, :-1] + img_array[1:, :-1] +
-                               img_array[:-1, 1:] + img_array[1:, 1:]) / 4
-            print(f"  Satellite texture loaded: {SATELLITE_FILE}")
-        except Exception as e:
-            print(f"  Warning: Could not load satellite texture: {e}")
-            satellite_colors = None
+            img = Image.open(satellite_file)
+            if img.mode == 'RGBA':
+                img = img.convert('RGB')
+            img_array = np.array(img)
+            texture = pv.numpy_to_texture(img_array)
 
-    # Pre-compute speed range (do this FIRST, before creating figure)
-    all_speeds = []
-    for i in range(n_frames):
-        mask = ~np.isnan(x_data[i])
-        if mask.any():
-            speeds = np.sqrt(vx_data[i, mask]**2 + vy_data[i, mask]**2)
-            all_speeds.extend(speeds)
-    speed_max = max(all_speeds) if all_speeds else 1.0
-    print(f"  Speed range: 0 ~ {speed_max:.2f} m/s (fixed)")
+            # 텍스처 좌표 - U, V축 모두 뒤집기 (terrain_processor preview와 일치)
+            u = np.linspace(1, 0, nx)  # X축 뒤집기에 맞춰 U축도 뒤집기
+            v = np.linspace(1, 0, ny)
+            U_tex, V_tex = np.meshgrid(u, v)
+            grid.active_texture_coordinates = np.c_[U_tex.ravel(), V_tex.ravel()]
+        except Exception:
+            texture = None
 
-    # Figure setup with tight layout and thin colorbar
-    from matplotlib.gridspec import GridSpec
-    import matplotlib.cm as cm
-    from mpl_toolkits.axes_grid1 import make_axes_locatable
+    # 입자 데이터 - X,Y축 모두 뒤집기 (DEM/텍스처와 일치시키기)
+    mask = ~np.isnan(x_data[frame_data_idx])
+    px_orig = x_data[frame_data_idx, mask]
+    py_orig = y_data[frame_data_idx, mask]
+    vx = vx_data[frame_data_idx, mask]
+    vy = vy_data[frame_data_idx, mask]
 
-    fig = plt.figure(figsize=(12, 9))
-    ax = fig.add_subplot(111, projection='3d')
+    # 입자 좌표 X,Y축 모두 뒤집기 (terrain_processor preview와 일치)
+    max_x = (nx - 1) * cell_size
+    max_y = (ny - 1) * cell_size
+    px = max_x - px_orig  # X 뒤집기
+    py = max_y - py_orig  # Y 뒤집기
 
-    # Adjust subplot to reduce whitespace
-    fig.subplots_adjust(left=0.02, right=0.92, top=0.95, bottom=0.05)
-
-    # Create thin colorbar attached to the right side
-    norm = plt.Normalize(vmin=0, vmax=speed_max)
-    sm = cm.ScalarMappable(cmap='plasma', norm=norm)
-    sm.set_array([])
-    # Position colorbar: [left, bottom, width, height] in figure coordinates
-    cax = fig.add_axes([0.93, 0.15, 0.015, 0.7])
-    cbar = fig.colorbar(sm, cax=cax, label='Speed (m/s)')
-
-    def get_particle_elevation(x_arr, y_arr):
-        col = np.clip(x_arr / cell_size, 0, nx - 1.001)
-        row = np.clip(y_arr / cell_size, 0, ny - 1.001)
+    # 입자 고도 계산
+    height_offset = render_config.get('particle_height_offset', DEFAULT_CONFIG['particle_height_offset'])
+    if len(px) > 0:
+        col = np.clip(px / cell_size, 0, nx - 1.001)
+        row = np.clip(py / cell_size, 0, ny - 1.001)
         col0 = np.floor(col).astype(int)
         row0 = np.floor(row).astype(int)
         col1 = np.minimum(col0 + 1, nx - 1)
         row1 = np.minimum(row0 + 1, ny - 1)
         wx, wy = col - col0, row - row0
-        z = (terrain[row0, col0] * (1 - wx) * (1 - wy) +
-             terrain[row0, col1] * wx * (1 - wy) +
-             terrain[row1, col0] * (1 - wx) * wy +
-             terrain[row1, col1] * wx * wy)
-        return z
+        pz = (terrain_flipped[row0, col0] * (1 - wx) * (1 - wy) +
+              terrain_flipped[row0, col1] * wx * (1 - wy) +
+              terrain_flipped[row1, col0] * (1 - wx) * wy +
+              terrain_flipped[row1, col1] * wx * wy)
+        pz = pz + height_offset
 
-    def update(frame):
-        ax.clear()
+        speed = np.sqrt(vx**2 + vy**2)
+        particle_points = np.column_stack([px, py, pz])
+        particles = pv.PolyData(particle_points)
+        particles['speed'] = speed
+    else:
+        particles = None
+        speed = np.array([])
 
-        # Get valid particles for this frame
-        mask = ~np.isnan(x_data[frame])
-        px = x_data[frame, mask]
-        py = y_data[frame, mask]
-        vx = vx_data[frame, mask]
-        vy = vy_data[frame, mask]
+    # 플로터 설정
+    window_width = render_config.get('window_width', DEFAULT_CONFIG['window_width'])
+    window_height = render_config.get('window_height', DEFAULT_CONFIG['window_height'])
+    plotter = pv.Plotter(off_screen=True, window_size=[window_width, window_height])
+    plotter.enable_depth_peeling(10)
 
-        if len(px) > 0:
-            terrain_z = get_particle_elevation(px, py)
-            pz = terrain_z + 10
-            speed = np.sqrt(vx**2 + vy**2)
-        else:
-            pz = np.array([])
-            speed = np.array([])
+    # 지형 추가
+    terrain_cmap = render_config.get('terrain_cmap', DEFAULT_CONFIG['terrain_cmap'])
+    if texture is not None:
+        plotter.add_mesh(grid, texture=texture, smooth_shading=True)
+    else:
+        plotter.add_mesh(grid, cmap=terrain_cmap, smooth_shading=True)
 
-        ax.computed_zorder = False
+    # 입자 추가
+    speed_max = render_config['speed_max']
+    particle_size = render_config.get('particle_size', DEFAULT_CONFIG['particle_size'])
+    particle_cmap = render_config.get('particle_cmap', DEFAULT_CONFIG['particle_cmap'])
 
-        # Plot terrain
-        if satellite_colors is not None:
-            ax.plot_surface(X, Y, terrain, facecolors=satellite_colors,
-                           rstride=1, cstride=1, antialiased=False,
-                           shade=False, zorder=1)
-        else:
-            ax.plot_surface(X, Y, terrain, cmap='terrain', alpha=0.8, zorder=1,
-                           rstride=1, cstride=1, antialiased=False)
+    if particles is not None and len(particles.points) > 0:
+        plotter.add_mesh(
+            particles,
+            scalars='speed',
+            cmap=particle_cmap,
+            point_size=particle_size,
+            render_points_as_spheres=True,
+            clim=[0, speed_max],
+            show_scalar_bar=False,
+            ambient=0.5,
+            diffuse=0.5,
+        )
 
-        # Plot particles
-        if len(px) > 0:
-            edge_colors = EDGE_COLOR if PARTICLE_EDGE else 'none'
-            line_widths = EDGE_WIDTH if PARTICLE_EDGE else 0
-            ax.scatter(px, py, pz, c=speed, cmap='plasma', s=PARTICLE_SIZE,
-                      vmin=0, vmax=speed_max, edgecolors=edge_colors,
-                      linewidths=line_widths,
-                      depthshade=False, alpha=1.0, zorder=2)
+    # Colorbar 추가
+    plotter.add_scalar_bar(
+        title='Speed (m/s)',
+        vertical=True,
+        position_x=0.9,
+        position_y=0.2,
+        width=0.05,
+        height=0.6,
+        n_labels=5,
+        fmt='%.1f',
+    )
+    plotter.update_scalar_bar_range([0, speed_max])
 
-        ax.set_xlabel('X (m)')
-        ax.set_ylabel('Y (m)')
-        ax.set_zlabel('Z (m)')
+    # 카메라 설정
+    center = grid.center
+    bounds = grid.bounds
+    x_range = bounds[1] - bounds[0]
+    y_range = bounds[3] - bounds[2]
+    z_range = bounds[5] - bounds[4]
+    max_range = max(x_range, y_range, z_range)
 
-        n_act = n_active[frame]
-        max_spd = speed.max() if len(speed) > 0 else 0
-        mean_spd = speed.mean() if len(speed) > 0 else 0
+    camera_factor = render_config.get('camera_distance_factor', DEFAULT_CONFIG['camera_distance_factor'])
+    distance = max_range * camera_factor
 
-        # TM coordinates (EPSG:5186) - center of cropped area
-        x_min = float(data['x_min'])
-        y_min = float(data['y_min'])
-        x_center = x_min + (nx * cell_size) / 2
-        y_center = y_min + (ny * cell_size) / 2
+    # 북쪽이 하단 정면에 오도록
+    cam_x = center[0]
+    cam_y = center[1] - distance * 0.8
+    cam_z = center[2] + distance * 0.5
+    plotter.camera_position = [(cam_x, cam_y, cam_z), center, (0, 0, 1)]
 
-        ax.set_title(f'Irwon Landslide (TM: {x_center:.0f}, {y_center:.0f}) - t = {times[frame]:.1f}s\n'
-                    f'Particles: {n_act}, Speed: mean={mean_spd:.1f}, max={max_spd:.1f} m/s')
+    # 제목
+    n_act = n_active[frame_data_idx]
+    max_spd = speed.max() if len(speed) > 0 else 0
+    mean_spd = speed.mean() if len(speed) > 0 else 0
+    x_center = x_min + (nx * cell_size) / 2
+    y_center = y_min + (ny * cell_size) / 2
 
-        ax.view_init(elev=VIEW_ELEV, azim=VIEW_AZIM)
+    title_prefix = render_config.get('title_prefix', DEFAULT_CONFIG['title_prefix'])
+    title = (f"{title_prefix} (TM: {x_center:.0f}, {y_center:.0f}) - t = {times[frame_data_idx]:.1f}s\n"
+             f"Particles: {n_act}, Speed: mean={mean_spd:.1f}, max={max_spd:.1f} m/s")
 
-        # Equal aspect ratio
-        x_range = X.max() - X.min()
-        y_range = Y.max() - Y.min()
-        z_range = terrain.max() - terrain.min()
-        max_range = max(x_range, y_range, z_range)
-        ax.set_box_aspect([x_range/max_range, y_range/max_range, z_range/max_range])
+    # 한글 폰트 설정
+    text_actor = plotter.add_text(title, font_size=12, position='upper_left')
+    korean_font = Path('C:/Windows/Fonts/malgun.ttf')
+    if korean_font.exists() and text_actor is not None:
+        text_actor.GetTextProperty().SetFontFile(str(korean_font))
+        text_actor.GetTextProperty().SetFontFamily(4)  # VTK_FONT_FILE
 
-        return []
+    # 저장
+    plotter.screenshot(output_path)
+    plotter.close()
 
-    print(f"Generating {n_frames} frames...")
-    print(f"  View: elev={VIEW_ELEV}, azim={VIEW_AZIM}")
-    print(f"  FPS: {FPS}, DPI: {DPI}")
-
-    anim = animation.FuncAnimation(fig, update, frames=n_frames,
-                                   interval=1000//FPS, blit=False)
-
-    print(f"Saving to {output_file}...")
-    anim.save(output_file, writer='pillow', fps=FPS, dpi=DPI)
-    print(f"Animation saved!")
-
-    plt.close()
+    return frame_idx
 
 
-def plot_runout_distance(data, output_file='runout_distance.png'):
-    """Plot runout distance over time."""
+def render_frame_subprocess(args):
+    """subprocess로 프레임 렌더링"""
+    data_path, frame_idx, frame_data_idx, output_path, config_json = args
 
-    # Extract data
+    script = f'''
+import sys
+sys.path.insert(0, r"{Path(__file__).parent}")
+from visualize_results import render_frame
+import json
+config = json.loads(r"""{config_json}""")
+render_frame(r"{data_path}", {frame_idx}, {frame_data_idx}, r"{output_path}", config)
+'''
+
+    result = subprocess.run(
+        ['python', '-c', script],
+        capture_output=True,
+        text=True,
+        timeout=120
+    )
+
+    if result.returncode != 0:
+        raise RuntimeError(f"Frame {frame_idx} failed: {result.stderr}")
+
+    return frame_idx
+
+
+def create_animation(data_path: str, output_dir: Path, vis_config: dict,
+                     n_workers: int = 4, frame_skip: int = None, parallel: bool = True):
+    """애니메이션 생성"""
+
+    log("=" * 60)
+    log("LANDSLIDE VISUALIZATION (PyVista/VTK)")
+    log("=" * 60)
+
+    # 데이터 로드
+    log(f"Loading data from {data_path}...")
+    data = np.load(data_path, allow_pickle=True)
+    terrain = data['terrain']
     times = data['times']
+
+    ny, nx = terrain.shape
+    n_frames = len(times)
+
+    log(f"  Frames: {n_frames}")
+    log(f"  Terrain: {terrain.shape}")
+    log(f"  Duration: {times[-1]:.1f}s")
+
+    # frame_skip 결정 (CLI > config > default)
+    if frame_skip is None:
+        frame_skip = vis_config.get('frame_skip', DEFAULT_CONFIG['frame_skip'])
+
+    frame_indices = list(range(0, n_frames, frame_skip))
+    actual_frames = len(frame_indices)
+    log(f"  Frame skip: {frame_skip} ({actual_frames} frames to render)")
+
+    # speed_max 계산
+    log("  Computing speed range...")
+    all_speeds = []
     x_data = data['x']
-    y_data = data['y']
     vx_data = data['vx']
     vy_data = data['vy']
-    init_x_local = float(data['init_x']) - float(data['x_min'])
-    init_y_local = float(data['init_y']) - float(data['y_min'])
-
-    n_frames = len(times)
-    runout_distances = []
-    mean_distances = []
-    max_speeds = []
-
     for i in range(n_frames):
         mask = ~np.isnan(x_data[i])
-        px = x_data[i, mask]
-        py = y_data[i, mask]
-        vx = vx_data[i, mask]
-        vy = vy_data[i, mask]
+        if mask.any():
+            speeds = np.sqrt(vx_data[i, mask]**2 + vy_data[i, mask]**2)
+            all_speeds.extend(speeds)
+    speed_max = float(max(all_speeds)) if all_speeds else 1.0
+    log(f"  Speed range: 0 ~ {speed_max:.2f} m/s")
 
-        if len(px) > 0:
-            distances = np.sqrt((px - init_x_local)**2 + (py - init_y_local)**2)
-            runout_head = distances.max()
-            mean_dist = distances.mean()
-            speeds = np.sqrt(vx**2 + vy**2)
-            max_spd = speeds.max()
+    # 위성 이미지 찾기
+    satellite_file = ''
+    if vis_config.get('use_satellite', True):
+        for pattern in ['*satellite*.png', '*satellite*.jpg']:
+            matches = list(output_dir.glob(pattern))
+            if matches:
+                satellite_file = str(matches[0])
+                log(f"  Satellite texture: {Path(satellite_file).name}")
+                break
+
+    # 렌더링 설정 구성
+    render_config = {
+        'speed_max': speed_max,
+        'satellite_file': satellite_file,
+        **vis_config
+    }
+
+    # 임시 디렉토리
+    temp_dir = Path(tempfile.mkdtemp(prefix='landslide_frames_'))
+    log(f"  Temp dir: {temp_dir}")
+
+    mode = "parallel" if parallel else "sequential"
+    log(f"\nGenerating {actual_frames} frames [{mode}] (workers={n_workers})...")
+
+    start_time = datetime.now()
+
+    try:
+        if parallel:
+            # 병렬 처리
+            config_json = json.dumps(render_config)
+            tasks = []
+            for i, frame_data_idx in enumerate(frame_indices):
+                output_file = str(temp_dir / f"frame_{i:04d}.png")
+                tasks.append((data_path, i, frame_data_idx, output_file, config_json))
+
+            completed = 0
+            failed = 0
+
+            with ThreadPoolExecutor(max_workers=n_workers) as executor:
+                future_to_task = {executor.submit(render_frame_subprocess, t): t for t in tasks}
+
+                for future in as_completed(future_to_task):
+                    task = future_to_task[future]
+                    try:
+                        future.result()
+                        completed += 1
+
+                        elapsed = (datetime.now() - start_time).total_seconds()
+                        fps = completed / elapsed if elapsed > 0 else 0
+                        eta = (actual_frames - completed) / fps if fps > 0 else 0
+
+                        if completed == 1 or completed == actual_frames or completed % 5 == 0:
+                            log(f"  [Frame {completed}/{actual_frames}] {completed*100//actual_frames}% "
+                                f"elapsed: {elapsed:.1f}s, ETA: {eta:.1f}s, speed: {fps:.2f} fps")
+                    except Exception as e:
+                        failed += 1
+                        log(f"  ERROR: Frame {task[1]} failed: {e}")
+
+            elapsed_total = (datetime.now() - start_time).total_seconds()
+            log(f"  Rendering complete: {elapsed_total:.1f}s ({completed}/{actual_frames} frames)")
+
         else:
-            runout_head = 0
-            mean_dist = 0
-            max_spd = 0
+            # 순차 처리
+            for i, frame_data_idx in enumerate(frame_indices):
+                output_file = str(temp_dir / f"frame_{i:04d}.png")
 
-        runout_distances.append(runout_head)
-        mean_distances.append(mean_dist)
-        max_speeds.append(max_spd)
+                render_frame(data_path, i, frame_data_idx, output_file, render_config)
 
-    # Create figure
-    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 8), sharex=True)
+                completed = i + 1
+                elapsed = (datetime.now() - start_time).total_seconds()
+                fps = completed / elapsed if elapsed > 0 else 0
+                eta = (actual_frames - completed) / fps if fps > 0 else 0
 
-    ax1.plot(times, runout_distances, 'b-', linewidth=2, label='Head (max)')
-    ax1.plot(times, mean_distances, 'g--', linewidth=1.5, label='Centroid (mean)')
-    ax1.set_ylabel('Runout Distance (m)')
-    ax1.set_title('Landslide Runout Distance Over Time')
-    ax1.legend()
-    ax1.grid(True, alpha=0.3)
+                if completed == 1 or completed == actual_frames or completed % 5 == 0:
+                    log(f"  [Frame {completed}/{actual_frames}] {completed*100//actual_frames}% "
+                        f"elapsed: {elapsed:.1f}s, ETA: {eta:.1f}s, speed: {fps:.2f} fps")
 
-    ax2.plot(times, max_speeds, 'r-', linewidth=2)
-    ax2.set_xlabel('Time (s)')
-    ax2.set_ylabel('Max Speed (m/s)')
-    ax2.set_title('Maximum Particle Speed Over Time')
-    ax2.grid(True, alpha=0.3)
+            elapsed_total = (datetime.now() - start_time).total_seconds()
+            log(f"  Rendering complete: {elapsed_total:.1f}s ({actual_frames} frames)")
 
-    plt.tight_layout()
-    plt.savefig(output_file, dpi=150)
-    print(f"Runout plot saved to {output_file}")
-    print(f"Final runout (head): {runout_distances[-1]:.1f} m")
-    print(f"Final runout (centroid): {mean_distances[-1]:.1f} m")
-    plt.close()
+        # 프레임 로드
+        log("  Loading rendered frames...")
+        frames = []
+        skipped = 0
+        for i in range(actual_frames):
+            frame_path = temp_dir / f"frame_{i:04d}.png"
+            if frame_path.exists():
+                frames.append(iio.imread(str(frame_path)))
+            else:
+                skipped += 1
+
+        if skipped > 0:
+            log(f"  Warning: {skipped} frames skipped")
+
+        if not frames:
+            log("  ERROR: No frames rendered!")
+            return None, None
+
+        # 출력 fps
+        output_fps = vis_config.get('fps', DEFAULT_CONFIG['fps'])
+
+        # GIF 저장
+        gif_filename = vis_config.get('animation_gif', DEFAULT_CONFIG['animation_gif'])
+        gif_path = output_dir / gif_filename
+        log(f"Saving GIF to {gif_path} (fps={output_fps})...")
+        iio.imwrite(str(gif_path), frames, fps=output_fps, loop=0)
+        log("GIF saved!")
+
+        # 비디오 저장 (imageio-ffmpeg 내장 바이너리 사용)
+        video_filename = vis_config.get('animation_video', DEFAULT_CONFIG['animation_video'])
+        video_path = output_dir / video_filename
+        log(f"Saving video to {video_path} (fps={output_fps})...")
+        try:
+            import imageio_ffmpeg
+            frames_rgb = [f[:, :, :3] if f.shape[-1] == 4 else f for f in frames]
+            h, w = frames_rgb[0].shape[:2]
+
+            # imageio-ffmpeg 내장 ffmpeg 바이너리 경로
+            ffmpeg_exe = imageio_ffmpeg.get_ffmpeg_exe()
+            log(f"  Using ffmpeg: {ffmpeg_exe}")
+
+            # ffmpeg로 webm 생성 (stdin으로 프레임 전달)
+            ffmpeg_cmd = [
+                ffmpeg_exe, '-y',
+                '-f', 'rawvideo',
+                '-vcodec', 'rawvideo',
+                '-s', f'{w}x{h}',
+                '-pix_fmt', 'rgb24',
+                '-r', str(output_fps),
+                '-i', '-',
+                '-c:v', 'libvpx-vp9',
+                '-b:v', '2M',
+                '-pix_fmt', 'yuv420p',
+                str(video_path)
+            ]
+
+            proc = subprocess.Popen(ffmpeg_cmd, stdin=subprocess.PIPE,
+                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            for frame in frames_rgb:
+                proc.stdin.write(frame.astype('uint8').tobytes())
+            proc.stdin.close()
+            proc.wait()
+
+            if proc.returncode == 0:
+                log("Video saved!")
+            else:
+                stderr = proc.stderr.read().decode()
+                log(f"  Video save failed: {stderr[:200]}")
+                video_path = None
+        except Exception as e:
+            log(f"  Video save failed: {e}")
+            video_path = None
+
+        return gif_path, video_path
+
+    finally:
+        log("  Cleaning up temp dir...")
+        shutil.rmtree(temp_dir, ignore_errors=True)
 
 
 def main():
-    print("=" * 60)
-    print("LANDSLIDE VISUALIZATION")
-    print("=" * 60)
+    parser = argparse.ArgumentParser(description='산사태 시뮬레이션 시각화 (PyVista/VTK)')
+    parser.add_argument('results_file', type=str, help='시뮬레이션 결과 파일 (.npz)')
+    parser.add_argument('--workers', '-w', type=int, default=4, help='병렬 워커 수')
+    parser.add_argument('--skip', '-s', type=int, default=None, help='프레임 스킵 (config 우선)')
+    parser.add_argument('--sequential', action='store_true', help='순차 처리 모드')
 
-    # Load saved results
-    results_file = 'D:/Claude/landslide/simulation_results.npz'
-    print(f"Loading results from {results_file}...")
-    data = load_results(results_file)
+    args = parser.parse_args()
 
-    print(f"  Frames: {len(data['times'])}")
-    print(f"  Duration: {data['times'][-1]:.1f}s")
-    print(f"  Terrain: {data['terrain'].shape}")
+    results_path = Path(args.results_file).resolve()
+    if not results_path.exists():
+        print(f"Error: File not found: {results_path}")
+        sys.exit(1)
 
-    # Create visualizations
-    print("\nCreating 3D animation...")
-    create_3d_animation(data)
+    output_dir = results_path.parent
 
-    print("\nCreating runout distance plot...")
-    plot_runout_distance(data)
+    # 설정 로드
+    vis_config_path = output_dir / 'visualization_config.yaml'
+    vis_config = load_visualization_config(vis_config_path)
 
-    print("\nDone!")
+    create_animation(
+        str(results_path),
+        output_dir,
+        vis_config,
+        n_workers=args.workers,
+        frame_skip=args.skip,
+        parallel=not args.sequential
+    )
+
+    log("\nDone!")
 
 
 if __name__ == '__main__':
