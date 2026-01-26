@@ -57,7 +57,7 @@ entrainment:
 
 # 시뮬레이션 실행
 simulation:
-  duration: 120.0  # total time (s)
+  duration: 60.0  # total time (s)
   save_interval: 0.2  # output interval (s)
 
 # 출력 설정
