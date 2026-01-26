@@ -1,3 +1,17 @@
+> **개발: 한국지질자원연구원(KIGAM) 지질자원AI융합연구실 권지회**
+>
+> **저작권: © 2025 한국지질자원연구원(Korea Institute of Geoscience and Mineral Resources, KIGAM). All rights reserved.**
+>
+> **본 소프트웨어 및 관련 문서의 저작권은 한국지질자원연구원에 있습니다. 출처를 명시하지 않은 무단 복제, 배포, 수정 및 상업적 이용은 저작권법에 의해 금지되어 있으며, 위반 시 민·형사상 법적 책임을 질 수 있습니다.**
+>
+> **본 소프트웨어를 연구 또는 교육 목적으로 사용하고자 하는 경우, 반드시 아래와 같이 출처를 명시하여야 합니다:**
+>
+> **한국지질자원연구원 지질자원AI융합연구실, "Landslide SPH Simulation", 2025.**
+>
+> **문의: 한국지질자원연구원 지질자원AI융합연구실 권지회 (jihoek@kigam.re.kr)**
+
+---
+
 # Landslide SPH Simulation
 
 GPU-accelerated depth-averaged landslide simulation using Smoothed Particle Hydrodynamics (SPH) with non-Newtonian rheology and bed entrainment.
