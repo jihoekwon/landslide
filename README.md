@@ -20,17 +20,57 @@ GPU parallel computing via CuPy enables efficient calculation of thousands of pa
 
 ![Landslide 3D Animation](guryoung_dem_10m/landslide_animation.gif)
 
-*120-second simulation of debris flow on Guryong terrain. Color represents particle velocity (m/s).*
+*60-second simulation of debris flow on Guryong terrain. Color represents particle velocity (m/s).*
 
-### Analysis Report
+### Key Metrics
 
-📥 [Download Analysis Report (HTML)](https://raw.githubusercontent.com/JihoeKwon/landslide/main/guryoung_dem_10m/analysis_report.html)
+| Metric | Value |
+|--------|-------|
+| **Maximum Speed** | 9.87 m/s (35.5 km/h) |
+| **Runout Distance** | 362.8 m |
+| **Sediment Concentration** | 35% |
+| **Impact Pressure** | 97.4 kPa |
+| **Simulation Duration** | 60 seconds |
 
-The report includes:
-- Key metrics (max velocity, runout distance, concentration)
-- AI-powered hazard assessment
-- Velocity/slope analysis plots
-- Particle distribution visualization
+### Hazard Analysis (AI-Generated)
+
+#### 1. 위험도 평가 요약
+
+본 시뮬레이션 분석 결과, 구룡산 일대에서 발생 가능한 토석류는 **매우 높은 위험도**를 나타내는 것으로 평가됩니다. 토석류의 최대 유속은 9.87m/s(35.5km/h)로 고속 자동차 수준에 달하며, 이는 위험등급 기준상 '고위험' 단계에 해당합니다. 토사 농도는 35%로 강력한 파괴력을 가진 전형적인 토석류 특성을 보이며, 이로 인한 추정 충격압력은 97.4kPa(974톤/㎡)에 이릅니다.
+
+이러한 충격압력은 철근콘크리트 구조물의 손상 기준(100kPa)에 근접한 수준으로, 일반 목조건물 붕괴 기준(20kPa)의 약 5배에 달합니다.
+
+#### 2. 거리별 피해 예상
+
+| 도달거리 | 도달시간 | Head 속도 | 충격압력 | 예상 피해 |
+|---------|---------|----------|---------|----------|
+| **100m** | 10.7초 | 5.9 m/s | 35 kPa | 목조건물 완전 붕괴, 차량 전복 |
+| **200m** | 27.5초 | 5.9 m/s | 35 kPa | 목조건물 붕괴, RC건물 저층부 손상 |
+| **300m** | 49.2초 | 6.1 m/s | 37 kPa | 목조건물 붕괴, 지하주차장 매몰 |
+| **362.8m** | 60초 | 6.7 m/s | - | 최대 도달 지점, 토사 퇴적 |
+
+#### 3. 대피 권고사항
+
+- **1차 위험구역 (Red Zone)**: 발생지점에서 반경 400m 이내 - 즉시 대피 필요
+- **2차 경계구역 (Orange Zone)**: 반경 400-500m - 예방적 대피 권고
+- **골든타임**: 10분 이내 (100m 지점 도달 시간 기준)
+- **대피 방향**: 토석류 흐름 방향과 수직인 좌우측 고지대
+
+#### 4. 재해 예방 권고사항
+
+**즉시 조치:**
+1. 24시간 감시체계 구축 (CCTV, 현장 관측소)
+2. 주민 대피 훈련 실시 (분기별 1회 이상)
+3. 비상방송 시설 정비
+4. 응급의료체계 준비
+5. 비상용품 비축 (3일분)
+
+**중장기 대책:**
+1. 사방댐 건설
+2. 배수로 정비
+3. 건축물 내진·내충격 보강
+4. 대피소 건설 (지상 3층 이상)
+5. 비상 우회도로 확보
 
 ---
 
