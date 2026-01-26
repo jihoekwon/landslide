@@ -589,8 +589,10 @@ def fig_to_base64(fig) -> str:
     return f"data:image/png;base64,{base64.b64encode(buf.read()).decode()}"
 
 
-def create_initial_condition_plot(data, config_info: dict) -> str:
-    """초기 조건 시각화"""
+def create_initial_condition_plot(data, config_info: dict, satellite_path: Path = None) -> str:
+    """초기 조건 시각화 (위성사진 배경)"""
+    from PIL import Image
+
     terrain = data['terrain']
     cell_size = float(data['cell_size'])
     x_min, y_min = float(data['x_min']), float(data['y_min'])
@@ -605,17 +607,27 @@ def create_initial_condition_plot(data, config_info: dict) -> str:
 
     fig, axes = plt.subplots(1, 2, figsize=(14, 6))
 
-    # 좌측: 2D 평면도
+    # 좌측: 2D 평면도 (위성사진 배경)
     ax1 = axes[0]
     extent = [0, nx * cell_size, 0, ny * cell_size]
-    im = ax1.imshow(terrain, extent=extent, origin='lower', cmap='terrain', alpha=0.8)
+
+    # 위성 이미지 로드 시도
+    if satellite_path and satellite_path.exists():
+        sat_img = Image.open(satellite_path)
+        sat_arr = np.array(sat_img)
+        # 위성 이미지는 Y축이 반전되어 있을 수 있음
+        ax1.imshow(sat_arr, extent=extent, origin='upper', aspect='auto')
+    else:
+        # 위성 이미지 없으면 DEM 사용
+        im = ax1.imshow(terrain, extent=extent, origin='lower', cmap='terrain', alpha=0.8)
+        plt.colorbar(im, ax=ax1, label='Elevation (m)', shrink=0.8)
+
     ax1.scatter(px, py, c='red', s=3, alpha=0.7, label='Initial Particles')
     ax1.scatter(init_x - x_min, init_y - y_min, c='yellow', s=100, marker='*', edgecolors='black', linewidths=1, label='Center', zorder=10)
     ax1.set_xlabel('X (m)')
     ax1.set_ylabel('Y (m)')
-    ax1.set_title('Initial Condition - Plan View')
+    ax1.set_title('Initial Condition - Satellite View')
     ax1.legend(loc='upper right')
-    plt.colorbar(im, ax=ax1, label='Elevation (m)', shrink=0.8)
 
     # 우측: 고도 프로파일
     ax2 = axes[1]
@@ -1062,9 +1074,23 @@ def generate_html_report(data, stats: SimulationStats, config_info: dict,
     if 'simulation' in config_info and 'project' in config_info['simulation']:
         project_name = config_info['simulation']['project'].get('name', project_name)
 
+    # 위성 이미지 경로 찾기
+    satellite_path = None
+    if 'simulation' in config_info and 'terrain' in config_info['simulation']:
+        sat_file = config_info['simulation']['terrain'].get('satellite_file')
+        if sat_file:
+            satellite_path = work_dir / sat_file
+    # 기본 패턴으로 검색
+    if not satellite_path or not satellite_path.exists():
+        for pattern in ['*_satellite_crop.png', '*satellite*.png']:
+            matches = list(work_dir.glob(pattern))
+            if matches:
+                satellite_path = matches[0]
+                break
+
     # 핵심 이미지만 생성
     print("  Creating plots...")
-    img_initial = create_initial_condition_plot(data, config_info)
+    img_initial = create_initial_condition_plot(data, config_info, satellite_path)
     img_velocity = create_velocity_evolution_plot(data)
     img_entrainment = create_entrainment_plot(data)
     img_slope_analysis = create_slope_runout_analysis_plot(data)
