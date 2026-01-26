@@ -24,7 +24,7 @@ GPU parallel computing via CuPy enables efficient calculation of thousands of pa
 
 ### Analysis Report
 
-📊 [View Full Analysis Report (HTML)](https://htmlpreview.github.io/?https://github.com/JihoeKwon/landslide/blob/main/guryoung_dem_10m/analysis_report.html)
+📥 [Download Analysis Report (HTML)](https://raw.githubusercontent.com/JihoeKwon/landslide/main/guryoung_dem_10m/analysis_report.html)
 
 The report includes:
 - Key metrics (max velocity, runout distance, concentration)
