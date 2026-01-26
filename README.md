@@ -18,15 +18,19 @@ GPU parallel computing via CuPy enables efficient calculation of thousands of pa
 
 ### 3D Animation
 
-![Landslide 3D Animation](irwon_landslide_3d.gif)
+![Landslide 3D Animation](guryoung_dem_10m/landslide_animation.gif)
 
-*60-second simulation of debris flow on Daeomsan terrain. Color represents particle velocity (m/s).*
+*120-second simulation of debris flow on Guryong terrain. Color represents particle velocity (m/s).*
 
-### Entrainment Analysis
+### Analysis Report
 
-![Entrainment Analysis](entrainment_2panel.png)
+📊 [View Full Analysis Report (HTML)](guryoung_dem_10m/analysis_report.html)
 
-*Top panel: Velocity and runout distance over time. Bottom panel: Slope angle, cumulative entrainment volume, and sediment concentration evolution.*
+The report includes:
+- Key metrics (max velocity, runout distance, concentration)
+- AI-powered hazard assessment
+- Velocity/slope analysis plots
+- Particle distribution visualization
 
 ---
 
@@ -40,41 +44,39 @@ The model uses depth-averaged (shallow water) equations, integrating the 3D Navi
 - Horizontal length scale >> vertical length scale
 
 **Mass Conservation (Continuity)**:
-```
-∂h/∂t + ∇·(h·v̄) = E - D
-```
+
+$$\frac{\partial h}{\partial t} + \nabla \cdot (h \bar{v}) = E - D$$
+
 where:
-- `h` = flow depth [m]
-- `v̄` = depth-averaged velocity [m/s]
-- `E` = entrainment rate [m/s]
-- `D` = deposition rate [m/s]
+- $h$ = flow depth [m]
+- $\bar{v}$ = depth-averaged velocity [m/s]
+- $E$ = entrainment rate [m/s]
+- $D$ = deposition rate [m/s]
 
 **Momentum Conservation**:
-```
-∂(hv̄)/∂t + ∇·(hv̄⊗v̄) = -g·h·∇(h + z_b) - τ_b/ρ + S
-```
+
+$$\frac{\partial (h\bar{v})}{\partial t} + \nabla \cdot (h\bar{v} \otimes \bar{v}) = -gh\nabla(h + z_b) - \frac{\tau_b}{\rho} + S$$
+
 where:
-- `z_b` = bed elevation [m]
-- `τ_b` = basal shear stress [Pa]
-- `S` = source terms (viscosity, etc.)
+- $z_b$ = bed elevation [m]
+- $\tau_b$ = basal shear stress [Pa]
+- $S$ = source terms (viscosity, etc.)
 
 ### 1.2 SPH Discretization
 
 **Depth-averaged continuity** in SPH form:
-```
-dh_i/dt = Σⱼ Ωⱼ (vᵢ - vⱼ)·∇Wᵢⱼ
-```
-where `Ωⱼ = mⱼ/(ρ₀·hⱼ)` is the particle area.
+
+$$\frac{dh_i}{dt} = \sum_j \Omega_j (v_i - v_j) \cdot \nabla W_{ij}$$
+
+where $\Omega_j = \frac{m_j}{\rho_0 h_j}$ is the particle area.
 
 **Hydrostatic pressure**:
-```
-P = ½ ρ₀ g h²
-```
+
+$$P = \frac{1}{2} \rho_0 g h^2$$
 
 **Pressure gradient force** (depth-averaged):
-```
-(dv/dt)_pressure = -g Σⱼ Ωⱼ (hᵢ + hⱼ)/2 · ∇Wᵢⱼ
-```
+
+$$\left(\frac{dv}{dt}\right)_{pressure} = -g \sum_j \Omega_j \frac{h_i + h_j}{2} \cdot \nabla W_{ij}$$
 
 ### 1.3 References - Depth-Averaged SPH
 
@@ -92,14 +94,11 @@ Debris flows exhibit non-Newtonian behavior - the relationship between shear str
 
 The Voellmy model (1955) combines Coulomb friction with velocity-dependent turbulent resistance:
 
-```
-τ_b = μ_b·σ_n + ρg·v²/ξ
-```
+$$\tau_b = \mu_b \sigma_n + \frac{\rho g v^2}{\xi}$$
 
 In friction coefficient form:
-```
-f = μ_b + v²/ξ
-```
+
+$$f = \mu_b + \frac{v^2}{\xi}$$
 
 | Parameter | Symbol | Value | Description |
 |-----------|--------|-------|-------------|
@@ -125,14 +124,57 @@ f = μ_b + v²/ξ
 - Debris flows: ξ = 100-500 m/s²
 - Rock avalanches: ξ = 500-1000 m/s²
 
+#### μ_b vs Static Friction Angle
+
+The basal friction coefficient $\mu_b$ is related to friction angle $\varphi$ by:
+
+$$\mu_b = \tan(\varphi)$$
+
+| μ_b | Equivalent Angle |
+|-----|------------------|
+| 0.1 | 5.7° |
+| 0.2 | 11.3° |
+| 0.3 | 16.7° |
+| 0.5 | 26.6° |
+| 0.7 | 35.0° |
+
+**Why μ_b = 0.1 (5.7°) instead of typical static friction angles (30-40°)?**
+
+Static friction angles of dry materials:
+- Dry sand: 30-35°
+- Gravel: 35-45°
+- Debris/soil: 25-40°
+
+However, the **effective friction** during debris flow is much lower due to:
+
+| Factor | Effect |
+|--------|--------|
+| **Pore water pressure** | Water reduces inter-particle contact forces → friction↓ |
+| **Fluidization** | High-speed flow causes particles to become suspended |
+| **Lubrication** | Water + fine particles form lubricating film |
+
+**Key Distinction**:
+
+| Parameter | Value | Meaning | Used in |
+|-----------|-------|---------|---------|
+| $\varphi_{bed}$ | 35° | Material property at rest | Entrainment model |
+| $\mu_b$ | 0.1 | Effective resistance during flow | Voellmy model |
+
+**Literature values for μ_b** (Hungr, 1995):
+
+| Material | μ_b | Equivalent Angle |
+|----------|-----|------------------|
+| Saturated debris flow | 0.05-0.15 | 3-9° |
+| Rock avalanche | 0.1-0.3 | 6-17° |
+| Dry rockslide | 0.4-0.6 | 22-31° |
+
 ### 2.2 Bingham Viscoplastic Model
 
 The Bingham model describes fluids with yield stress - flow only occurs when applied stress exceeds a threshold:
 
-```
-τ = τ_y + μ·γ̇    (if τ > τ_y)
-γ̇ = 0            (if τ ≤ τ_y)
-```
+$$\tau = \tau_y + \mu \dot{\gamma} \quad \text{if } \tau > \tau_y$$
+
+$$\dot{\gamma} = 0 \quad \text{if } \tau \leq \tau_y$$
 
 | Parameter | Symbol | Value | Description |
 |-----------|--------|-------|-------------|
@@ -146,10 +188,10 @@ The Bingham model describes fluids with yield stress - flow only occurs when app
 - **Viscosity (μ)**: Governs the rate of deformation once flowing. Higher viscosity → slower, more uniform flow.
 
 **Stop Condition**: Flow stops when driving stress falls below yield stress:
-```
-τ_driving = ρgh·sinθ
-τ_driving < τ_y → Flow stops
-```
+
+$$\tau_{driving} = \rho g h \sin\theta$$
+
+$$\tau_{driving} < \tau_y \Rightarrow \text{Flow stops}$$
 
 **Typical Values** (from literature):
 | Material | τ_y (Pa) | μ (Pa·s) |
@@ -161,10 +203,12 @@ The Bingham model describes fluids with yield stress - flow only occurs when app
 ### 2.3 Combined Implementation
 
 The total basal resistance in this model:
-```
-a_friction = -g·(μ_b + v²/ξ)·v/|v|           # Voellmy
-a_yield = -τ_y/(ρ₀·h)·v/|v|    (if |v| < 1)  # Bingham (low speed only)
-```
+
+**Voellmy friction**:
+$$a_{friction} = -g \left( \mu_b + \frac{v^2}{\xi} \right) \frac{\mathbf{v}}{|\mathbf{v}|}$$
+
+**Bingham yield** (applied at low speed, $|v| < 1$ m/s):
+$$a_{yield} = -\frac{\tau_y}{\rho_0 h} \frac{\mathbf{v}}{|\mathbf{v}|}$$
 
 The Bingham yield term is applied only at low velocities as a stopping criterion.
 
@@ -186,9 +230,7 @@ Debris flows can grow significantly by entraining bed material (erosion) or lose
 
 Takahashi (1991, 2007) proposed that debris flows tend toward an equilibrium sediment concentration that depends on channel slope:
 
-```
-C_eq = ρ_w · tan(θ) / [(ρ_s - ρ_w) · (tan(φ) - tan(θ))]
-```
+$$C_{eq} = \frac{\rho_w \tan\theta}{(\rho_s - \rho_w)(\tan\varphi - \tan\theta)}$$
 
 | Parameter | Symbol | Value | Description |
 |-----------|--------|-------|-------------|
@@ -199,17 +241,15 @@ C_eq = ρ_w · tan(θ) / [(ρ_s - ρ_w) · (tan(φ) - tan(θ))]
 | Max packing | C_max | 0.65 | Maximum solid concentration |
 
 **Physical Meaning**:
-- Steeper slopes → higher C_eq (more sediment can be transported)
-- When θ → φ: C_eq → ∞ (slope at failure threshold)
-- When θ → 0: C_eq → 0 (flat bed, no transport capacity)
+- Steeper slopes → higher $C_{eq}$ (more sediment can be transported)
+- When $\theta \to \varphi$: $C_{eq} \to \infty$ (slope at failure threshold)
+- When $\theta \to 0$: $C_{eq} \to 0$ (flat bed, no transport capacity)
 
 ### 3.2 Erosion Rate
 
-When flow concentration is below equilibrium (C < C_eq), erosion occurs:
+When flow concentration is below equilibrium ($C < C_{eq}$), erosion occurs:
 
-```
-i_e = δ_e · C_eq · v
-```
+$$i_e = \delta_e \cdot C_{eq} \cdot v$$
 
 | Parameter | Symbol | Value | Description |
 |-----------|--------|-------|-------------|
@@ -222,40 +262,94 @@ i_e = δ_e · C_eq · v
 
 ### 3.3 Deposition Rate
 
-When flow concentration exceeds equilibrium (C > C_eq), deposition occurs:
+When flow concentration exceeds equilibrium ($C > C_{eq}$), deposition occurs:
 
-```
-i_d = δ_d · C · v · (1 - tan(θ)/tan(φ))
-```
+$$i_d = \delta_d \cdot C \cdot v \cdot \left(1 - \frac{\tan\theta}{\tan\varphi}\right)$$
 
 | Parameter | Symbol | Value | Description |
 |-----------|--------|-------|-------------|
 | Deposition coefficient | δ_d | 0.01 | Empirical (0.01-0.05) |
 
-**Physical Interpretation of (1 - tan(θ)/tan(φ))**:
-- When θ → φ (steep slope): factor → 0, **no deposition** (slope too steep to hold sediment)
-- When θ → 0 (flat): factor → 1, **maximum deposition**
+**Physical Interpretation of** $\left(1 - \frac{\tan\theta}{\tan\varphi}\right)$:
+- When $\theta \to \varphi$ (steep slope): factor → 0, **no deposition** (slope too steep to hold sediment)
+- When $\theta \to 0$ (flat): factor → 1, **maximum deposition**
 - This captures the physical reality that deposited material must be stable on the slope
 
 ### 3.4 Mass Conservation
 
 **Flow depth change**:
-```
-dh/dt = i_e - i_d    (erosion increases h, deposition decreases h)
-```
+
+$$\frac{dh}{dt} = i_e - i_d$$
+
+(erosion increases $h$, deposition decreases $h$)
 
 **Solid mass conservation**:
-```
-d(h·C)/dt = C_bed · i_e - C_bed · i_d
-```
 
-where C_bed = C_max = 0.65 (packed bed concentration).
+$$\frac{d(hC)}{dt} = C_{bed} \cdot i_e - C_{bed} \cdot i_d$$
+
+where $C_{bed} = C_{max} = 0.65$ (packed bed concentration).
 
 **Concentration evolution**:
-- Erosion: bed material (C_bed = 0.65) enters → flow concentration increases
-- Deposition: material settles at C_bed → remaining flow becomes diluted
+- Erosion: bed material ($C_{bed} = 0.65$) enters → flow concentration increases
+- Deposition: material settles at $C_{bed}$ → remaining flow becomes diluted
 
-### 3.5 Implementation Notes
+### 3.5 Erosion vs Deposition: The Role of $C_{init}$
+
+**Critical Insight**: Whether erosion or deposition occurs depends on the relationship between the current concentration ($C$) and the equilibrium concentration ($C_{eq}$) at the local slope.
+
+#### $C_{eq}$ as a Function of Slope
+
+| Slope ($\theta$) | $\tan\theta$ | $C_{eq}$ ($\varphi$=35°) | Behavior if $C_{init}$=0.4 |
+|-----------|--------|--------------|------------------------|
+| 5° | 0.087 | 0.087 | $C > C_{eq}$ → **Deposition** |
+| 10° | 0.176 | 0.204 | $C > C_{eq}$ → **Deposition** |
+| 14° | 0.249 | 0.335 | $C > C_{eq}$ → **Deposition** |
+| 20° | 0.364 | 0.656 | $C < C_{eq}$ → **Erosion** |
+| 25° | 0.466 | 1.21 | $C < C_{eq}$ → **Erosion** |
+| 30° | 0.577 | 2.85 | $C < C_{eq}$ → **Erosion** |
+
+**Key Observations**:
+- At $\varphi_{bed} = 35°$, the **transition slope** where $C_{eq} = 0.4$ is approximately $\theta \approx 20°$
+- On slopes < 20°: $C_{init}(0.4) > C_{eq}$ → Net deposition
+- On slopes > 20°: $C_{init}(0.4) < C_{eq}$ → Net erosion
+
+#### Practical Implications
+
+1. **If your terrain is mostly gentle slopes (< 20°)**:
+   - With C_init = 0.4, you will see **net deposition**
+   - To observe erosion, lower C_init (e.g., 0.2-0.3)
+
+2. **If your terrain is steep (> 20°)**:
+   - With C_init = 0.4, you will see **net erosion**
+   - The flow will grow by entraining bed material
+
+3. **Parameter Sensitivity**:
+   - Higher $\varphi_{bed}$ → Higher $C_{eq}$ → More erosion
+   - Lower $C_{init}$ → $C < C_{eq}$ more often → More erosion
+   - Higher $\delta_e / \delta_d$ ratio → Faster erosion relative to deposition
+
+#### Recommended C_init Values
+
+| Flow Type | C_init Range | Typical Behavior |
+|-----------|--------------|------------------|
+| Dilute hyperconcentrated | 0.2-0.3 | Erosion-dominated (bulking) |
+| Typical debris flow | 0.4-0.5 | Mixed erosion/deposition |
+| Dense granular flow | 0.5-0.6 | Deposition-dominated |
+
+#### Example: Why Net Deposition Occurs
+
+For a simulation with:
+- Mean terrain slope: 14°
+- $C_{init}$: 0.4
+- $\varphi_{bed}$: 35°
+
+At 14° slope:
+
+$$C_{eq} = \frac{1000 \times \tan(14°)}{1650 \times (\tan(35°) - \tan(14°))} \approx 0.34$$
+
+Since $C_{init}$ (0.4) > $C_{eq}$ (0.34), **the flow deposits material** to reduce its concentration toward equilibrium.
+
+### 3.6 Implementation Notes
 
 ```python
 # Erosion (C < C_eq)
@@ -270,7 +364,7 @@ dh = -deposition_rate * dt
 d(h*C) = -C_bed * deposition_rate * dt
 ```
 
-### 3.6 References - Entrainment
+### 3.7 References - Entrainment
 
 - **Takahashi, T. (1991)**. *Debris Flow*. IAHR Monograph, Balkema, Rotterdam.
 - **Takahashi, T. (2007)**. *Debris Flow: Mechanics, Prediction and Countermeasures*. Taylor & Francis, London. (Primary reference)
@@ -354,8 +448,8 @@ The simulation saves to `simulation_results.npz`:
 | `vx`, `vy` | (N_frames, N_particles) | Velocities [m/s] |
 | `height` | (N_frames, N_particles) | Flow depth [m] |
 | `concentration` | (N_frames, N_particles) | Solid concentration [-] |
-| `density` | (N_frames, N_particles) | ρ = ρ₀·h [kg/m²] |
-| `pressure` | (N_frames, N_particles) | P = ½ρ₀gh² [Pa·m] |
+| `density` | (N_frames, N_particles) | $\rho = \rho_0 h$ [kg/m²] |
+| `pressure` | (N_frames, N_particles) | $P = \frac{1}{2}\rho_0 g h^2$ [Pa·m] |
 | `terrain` | (ny, nx) | Bed elevation [m] |
 
 ---
