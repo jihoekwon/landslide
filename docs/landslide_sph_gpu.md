@@ -130,14 +130,12 @@ n_steps, elapsed = sim.run(
 
 ### 깊이 평균 SPH 방정식
 
-- **연속 방정식**: `dh/dt + h·div(v) = 0`
-- **운동량 방정식**: `dv/dt = -g·grad(h) + F_friction + F_viscosity`
+- **연속 방정식**: $\frac{\partial h}{\partial t} + h \nabla \cdot \mathbf{v} = 0$
+- **운동량 방정식**: $\frac{\partial \mathbf{v}}{\partial t} = -g \nabla h + \mathbf{F}_{friction} + \mathbf{F}_{viscosity}$
 
 ### Voellmy 마찰 모델
 
-```
-τ_b = ρgh(μ_b + v²/ξ)
-```
+$$\tau_b = \rho g h \left( \mu_b + \frac{v^2}{\xi} \right)$$
 
 ### Bingham 유체 모델
 
@@ -145,11 +143,17 @@ n_steps, elapsed = sim.run(
 
 ### Takahashi (2007) 침식 모델
 
-```
-평형 농도: C_eq = ρ_w·tan(θ) / [(ρ_s - ρ_w)·(tan(φ) - tan(θ))]
-침식율: i_e = δ_e · C_eq · v  (C < C_eq)
-퇴적율: i_d = δ_d · C · v · (1 - tan(θ)/tan(φ))  (C > C_eq)
-```
+**평형 농도:**
+
+$$C_{eq} = \frac{\rho_w \tan\theta}{(\rho_s - \rho_w)(\tan\phi - \tan\theta)}$$
+
+**침식율** ($C < C_{eq}$):
+
+$$i_e = \delta_e \cdot C_{eq} \cdot v$$
+
+**퇴적율** ($C > C_{eq}$):
+
+$$i_d = \delta_d \cdot C \cdot v \cdot \left(1 - \frac{\tan\theta}{\tan\phi}\right)$$
 
 ## 출력 데이터 (`sim.history`)
 
@@ -172,12 +176,17 @@ state = {
 
 ## CFL 안정성 조건
 
-```
-CFL = (v_max + c0) × dt / h < 0.3~0.5
+**대류 CFL:**
 
-점성 안정성: dt < h² / (2ν)
-음속 조건: c0 ≥ 10 × v_max
-```
+$$\text{CFL} = \frac{(v_{max} + c_0) \cdot \Delta t}{h} < 0.3 \sim 0.5$$
+
+**점성 안정성:**
+
+$$\Delta t < \frac{h^2}{2\nu}$$
+
+**음속 조건:**
+
+$$c_0 \geq 10 \times v_{max}$$
 
 ## 의존성
 

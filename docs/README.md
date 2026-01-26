@@ -128,7 +128,7 @@ python generate_report.py ./my_project/simulation_results.npz
 
 ### 유변학
 
-- Voellmy 마찰 모델: `τ = ρgh(μ_b + v²/ξ)`
+- Voellmy 마찰 모델: $\tau = \rho g h \left( \mu_b + \frac{v^2}{\xi} \right)$
 - Bingham 유체 (항복응력)
 
 ### 침식 모델
@@ -138,11 +138,17 @@ python generate_report.py ./my_project/simulation_results.npz
 
 ## CFL 안정성 조건
 
-```
-대류 CFL: (v_max + c0) × dt / h < 0.5
-점성 CFL: dt < h² / (2ν)
-음속 조건: c0 ≥ 10 × v_max
-```
+**대류 CFL:**
+
+$$\text{CFL} = \frac{(v_{max} + c_0) \cdot \Delta t}{h} < 0.5$$
+
+**점성 CFL:**
+
+$$\Delta t < \frac{h^2}{2\nu}$$
+
+**음속 조건:**
+
+$$c_0 \geq 10 \times v_{max}$$
 
 ## 출력 데이터 형식
 
