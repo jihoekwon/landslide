@@ -1,99 +1,104 @@
-# CLAUDE.md
+# CLAUDE.md - Landslide SPH Simulation
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+이 파일은 Claude Code가 이 프로젝트를 이해하고 작업할 때 참고하는 가이드입니다.
 
 ## Project Overview
 
-This is Chapter 2 of a FastCampus AI Agent course ("Part 1: AI 에이전트와 Claude Code 기초"). This chapter focuses on teaching Claude Code installation and configuration, including MCP server setup and memory configuration.
+GPU 가속 SPH(Smoothed Particle Hydrodynamics) 기반 산사태/토석류 시뮬레이션 프로젝트입니다.
 
-**Course Information:**
-- Instructor: 정구봉 (GB Jeong)
-- Course: FastCampus AI Agent & Vibe Coding
-- GitBook: https://goobong.gitbook.io/fastcampus
-- GitHub: https://github.com/Koomook/fastcampus-ai-agent-vibecoding
+- **핵심 기술**: Depth-averaged SPH, Non-Newtonian rheology (Voellmy + Bingham), Takahashi (2007) entrainment model
+- **GPU 가속**: CuPy 사용
+- **개발**: 한국지질자원연구원(KIGAM) 지질자원AI융합연구실 권지회
 
-## File Structure
+## Pipeline
 
-```
-Chapter2_Claude_Code_설치와_설정/
-├── README.md                                      # Chapter overview and learning objectives
-├── CLAUDE.md                                       # This file - guidance for Claude Code
-├── Clip1_설치와_기본_사용법.md                     # Clip 1: Installation and basic usage
-├── Clip2_Local_Project_User_단위_MCP_연결하기.md   # Clip 2: MCP connection at different scopes
-└── Clip3_CLAUDE_md_AGENTS_md_세팅하기.md          # Clip 3: Setting up CLAUDE.md and AGENTS.md
-```
-
-## Content Structure
-
-This chapter contains educational materials organized into three clips:
-
-1. **Clip1_설치와_기본_사용법.md**: Installation, login, interactive vs one-off modes, execution mode switching (Default, Accept All, Plan Mode, Bypass Permissions)
-2. **Clip2_Local_Project_User_단위_MCP_연결하기.md**: MCP server scope levels (Local/Project/User), recommended MCP servers (Playwright, Linear, Codex, Context7), and Smithery.ai marketplace
-3. **Clip3_CLAUDE_md_AGENTS_md_세팅하기.md**: Memory management with CLAUDE.md and AGENTS.md files, `/memory`, `/init`, and `#` commands for session memory
-
-## Working with Educational Content
-
-### File Organization
-
-All lecture materials are in Korean and use descriptive filenames following the pattern:
-- `ClipN_<topic_description>.md` - Individual lecture clip content
-- `README.md` - Chapter overview with learning objectives
-
-### Content Guidelines
-
-When working with these educational materials:
-
-- **Korean Language**: All content is in Korean. Maintain Korean language for any updates or additions to preserve consistency
-- **Educational Format**: Content includes step-by-step tutorials, examples, and reference links
-- **Instructor Attribution**: All materials include instructor information footer - preserve this when editing
-- **GitBook Integration**: Materials are published to GitBook - changes here may need to be synced
-
-### Lecture Material Conventions
-
-- 📋, 🎯, 🗂️, ✅ and other emojis are used for section headers
-- Code examples use triple backticks with appropriate language tags
-- Step-by-step instructions use `STEP N:` format
-- Official documentation links are included in "참고 자료" sections
-
-## Common Tasks
-
-### Viewing Lecture Content
+### 1. 지형 데이터 처리
 ```bash
-# Read a specific clip
-cat Clip1_설치와_기본_사용법.md
+python terrain_processor.py <input_dem.tif> --output-dir <project_dir>
+```
+- GeoTIFF DEM → `.npy` 지형 배열 변환
+- 위성 이미지 크롭 및 정합
+- 출력: `*_terrain_crop.npy`, `*_satellite_crop.png`, `*_metadata.json`
 
-# View chapter overview
-cat README.md
+### 2. 시뮬레이션 실행
+```bash
+python run_simulation.py <project_dir>/simulation_config.yaml
+```
+- `simulation_config.yaml` 기반 SPH 시뮬레이션
+- 출력: `simulation_results.npz`
+
+### 3. 결과 시각화
+```bash
+python visualize_results.py <project_dir>
+```
+- `visualization_config.yaml` 설정 사용
+- PyVista/VTK 기반 3D 렌더링
+- 출력: `landslide_animation.gif`, `landslide_animation.webm`
+
+### 4. 분석 보고서 생성
+```bash
+python generate_report.py <project_dir>
+```
+- `report_config.yaml`의 LLM API 키 사용
+- 시뮬레이션 결과 분석 및 위험도 평가
+- 출력: `analysis_report.html`
+
+## Project Structure
+
+```
+landslide/
+├── landslide_sph_gpu.py      # 핵심 SPH 엔진 (GPU)
+├── run_simulation.py         # 시뮬레이션 실행 스크립트
+├── terrain_processor.py      # DEM/위성 처리
+├── visualize_results.py      # 3D 시각화 (PyVista)
+├── generate_report.py        # LLM 분석 보고서
+├── render_frame.py           # 프레임 렌더링 헬퍼
+│
+└── <project_dir>/            # 프로젝트별 디렉토리 (예: guryoung_dem_10m/)
+    ├── simulation_config.yaml
+    ├── visualization_config.yaml
+    ├── report_config.yaml
+    ├── *_terrain_crop.npy
+    ├── *_satellite_crop.png
+    ├── simulation_results.npz
+    └── landslide_animation.gif
 ```
 
-### Updating Content
-When updating educational materials:
-1. Maintain Korean language and formatting style
-2. Preserve emoji usage patterns for section headers
-3. Keep instructor attribution footer intact
-4. Update relevant cross-references if content structure changes
+## Config Files
 
-### Validating Links
-Educational content includes many external reference links (docs.claude.com, smithery.ai, etc.). When updating, verify that:
-- Official documentation links are current
-- GitBook and GitHub repository links are accurate
-- Course URLs remain valid
+### simulation_config.yaml
+- `terrain`: DEM 파일 경로
+- `initial_condition`: 붕괴 위치 (center), 반경 (radius), 두께 (thickness)
+- `sph`: smoothing length (h), dt, v_max
+- `rheology`: mu_b, xi, tau_y, mu
+- `entrainment`: delta_e, delta_d, phi_bed, C_init
+- `simulation`: duration, save_interval
 
-## Educational Context
+### visualization_config.yaml
+- `view_elev`, `view_azim`: 카메라 각도
+- `fps`, `frame_skip`: 애니메이션 설정
+- `particle_cmap`: 컬러맵 (plasma, viridis 등)
 
-### Target Audience
-- Korean-speaking developers learning AI agent development
-- Students new to Claude Code and MCP servers
-- Developers interested in AI-assisted coding workflows
+### report_config.yaml
+- `llm.api_key`: Anthropic API 키
+- `llm.model`: claude-sonnet-4-20250514 또는 claude-opus-4-20250514
 
-### Learning Path
-This chapter (Chapter 2) assumes students have completed Part 1, Chapter 1 and teaches:
-1. Installing and configuring Claude Code CLI
-2. Understanding and configuring MCP servers at different scope levels
-3. Managing AI agent memory through CLAUDE.md and AGENTS.md
+## Key Classes
 
-### Key Concepts Covered
-- **Claude Code Modes**: Interactive vs one-off execution, Default/Accept All/Plan/Bypass Permissions modes
-- **MCP Scopes**: Local (personal), Project (team collaboration), User (global utilities)
-- **Memory Management**: `/memory`, `/init` commands, `#` symbol for session notes
-- **MCP Marketplace**: Using Smithery.ai to discover and install MCP servers
+### `LandslideSPHGPU` (landslide_sph_gpu.py)
+- `__init__(terrain, ...)`: 지형 및 파라미터 초기화
+- `initialize_particles(...)`: 초기 붕괴체 입자 배치
+- `step()`: 1 타임스텝 계산
+- `run(duration, save_interval)`: 전체 시뮬레이션 실행
+
+## Dependencies
+
+```bash
+pip install numpy cupy-cuda12x matplotlib pillow scipy pyvista imageio[ffmpeg] anthropic
+```
+
+## Notes
+
+- 시뮬레이션 결과는 `.npz` 포맷 (times, x, y, vx, vy, height, concentration 등)
+- 좌표계: EPSG:5186 (Korea 2000 / Central Belt)
+- GPU 메모리 부족 시 `particle_spacing_factor` 증가
