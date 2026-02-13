@@ -101,6 +101,44 @@ velocity_by_distance = {
 }
 ```
 
+### 대상별 충격 분석 (건물/영역)
+
+`simulation_config.yaml`의 `targets` 섹션에 정의된 대상에 대한 토석류 도달/충격 분석.
+
+#### 지원 타겟 유형
+
+| 유형 | `target_type` | 좌표 | 설명 |
+|------|---------------|------|------|
+| 건물 | `"building"` (기본) | `coordinates` + `proximity_radius` | 점 + 반경 방식 |
+| 영역 | `"area"` | `bbox: [x_min, y_min, x_max, y_max]` | 바운딩 박스 방식 |
+
+#### 분석 항목
+
+**도달 시 (reached=True)**:
+- `arrival_time`: 최초 도달 시간 (초)
+- `head_speed`: 도달 시 선두 입자 속도 (m/s)
+- `arrival_pressure`: 도달 시 충격압력 (kPa) = ρ×v²/2
+- `front_concentration`: 도달 시 토사 농도
+- `flow_depth`: 도달 시 유동심 (m)
+- `peak_speed`, `peak_pressure`: 최대 충격 시점
+- `final_speed`, `final_n_particles`: 시뮬레이션 종료 시 잔류 상태
+- (영역 전용) `max_coverage_particles`, `max_coverage_ratio`: 최대 범람 시점
+
+**미도달 시 (reached=False, 영역 타겟)**:
+- `closest_distance`: 영역 경계까지 최근접 거리 (m)
+- `final_avg_speed`: 시뮬레이션 종료 시 평균 속도
+- `deceleration`: 감속률 (m/s², 마지막 20% 구간)
+- `estimated_remaining_travel`: 등감속 가정 추가 이동 가능 거리 (m)
+- `will_likely_reach`: 도달 가능성 판정 (bool)
+- `estimated_arrival_time`: 도달 예상 시간 (초)
+
+#### 좌표 데이터소스 (주의)
+
+**현재 자동 지오코딩 미지원.** 타겟 좌표는 수동 추정값:
+- 건물: 시뮬레이션 영상에서 유동 경로 확인 후 추정
+- 영역: 지형 분석(표고/경사)으로 평탄지 범위 추정
+- 정확한 좌표가 필요한 경우 Kakao/Naver Geocoding API + pyproj 변환 필요
+
 ## 시각화 (HTML 보고서)
 
 ### 자동 생성 플롯
@@ -142,9 +180,19 @@ LLM 분석 활성화 시 다음 내용 자동 생성:
 
 이동거리별 속도 분석
 
-### `get_llm_analysis(stats, data, config_info, velocity_by_distance) -> Optional[str]`
+### `analyze_impact_at_targets(data, config_info) -> list[dict]`
 
-Claude API 호출, AI 분석 생성
+대상별 충격 분석. `target_type`에 따라 내부적으로 분기:
+- `_analyze_building_target()`: 건물(점+반경) 분석
+- `_analyze_area_target()`: 영역(bbox) 분석 + 미도달 시 도달 가능성 추정
+
+### `format_impact_at_targets(target_impacts) -> str`
+
+충격 분석 결과를 마크다운 테이블로 포맷팅 (건물/영역 구분 표시)
+
+### `get_llm_analysis(stats, data, config_info, velocity_by_distance, target_impacts) -> Optional[str]`
+
+Claude API 호출, AI 분석 생성 (건물별/영역별 충격 데이터 포함)
 
 ### `generate_markdown_report(...) -> str`
 
@@ -194,6 +242,9 @@ report_path = generate_report(
 ├── 헤더 (프로젝트명, 날짜, 신뢰도)
 ├── 핵심 지표 카드 (최대속도, 도달거리, 농도)
 ├── AI 재해 위험 분석 (LLM 활성화 시)
+├── 대상별 충격 분석 카드 (targets 설정 시)
+│   ├── 도달 건물/영역: 도달시간, 속도, 충격압력, 피해판정
+│   └── 미도달 영역: 최근접 거리, 감속률, 도달 가능성 추정
 ├── 시뮬레이션 결과
 │   ├── 발생 위치 정보
 │   └── 초기 조건 플롯

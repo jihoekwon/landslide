@@ -206,6 +206,589 @@ def analyze_velocity_by_distance(data, distance_thresholds: List[float] = None) 
     return results
 
 
+def _analyze_building_target(target, times, x_data, y_data, vx_data, vy_data,
+                              conc_data, height_data, x_min, y_min, rho_debris,
+                              init_x=0, init_y=0):
+    """건물(점) 타겟 분석 - 기존 point+radius 방식"""
+    name = target.get('name', '미상')
+    coords = target.get('coordinates', [0, 0])
+    address = target.get('address', '')
+    bldg_type = target.get('type', target.get('structure_type', 'unknown'))
+    radius = target.get('proximity_radius', 30)
+
+    has_conc = conc_data is not None
+    has_height = height_data is not None
+
+    target_x_local = coords[0] - x_min
+    target_y_local = coords[1] - y_min
+
+    arrival_frame = None
+    peak_speed_frame = None
+    peak_speed_val = 0.0
+    min_closest_dist = float('inf')
+    closest_frame = None
+
+    for i in range(len(times)):
+        mask = ~np.isnan(x_data[i])
+        if not mask.any():
+            continue
+        px = x_data[i, mask]
+        py = y_data[i, mask]
+        dist_to_target = np.sqrt((px - target_x_local)**2 + (py - target_y_local)**2)
+        in_radius = dist_to_target <= radius
+
+        if in_radius.any():
+            if arrival_frame is None:
+                arrival_frame = i
+            vx = vx_data[i, mask][in_radius]
+            vy = vy_data[i, mask][in_radius]
+            speeds = np.sqrt(vx**2 + vy**2)
+            frame_max_speed = float(speeds.max())
+            if frame_max_speed > peak_speed_val:
+                peak_speed_val = frame_max_speed
+                peak_speed_frame = i
+        else:
+            frame_min_dist = float(dist_to_target.min())
+            if frame_min_dist < min_closest_dist:
+                min_closest_dist = frame_min_dist
+                closest_frame = i
+
+    impact = {
+        'name': name, 'address': address, 'type': bldg_type,
+        'target_type': 'building',
+        'coordinates': coords, 'proximity_radius': radius,
+        'reached': arrival_frame is not None,
+    }
+
+    if arrival_frame is not None:
+        mask_a = ~np.isnan(x_data[arrival_frame])
+        px_a, py_a = x_data[arrival_frame, mask_a], y_data[arrival_frame, mask_a]
+        vx_a, vy_a = vx_data[arrival_frame, mask_a], vy_data[arrival_frame, mask_a]
+        dist_a = np.sqrt((px_a - target_x_local)**2 + (py_a - target_y_local)**2)
+        in_r_a = dist_a <= radius
+        speeds_a = np.sqrt(vx_a[in_r_a]**2 + vy_a[in_r_a]**2)
+
+        impact['arrival_time'] = float(times[arrival_frame])
+        impact['head_speed'] = float(speeds_a.max())
+        impact['front_mean_speed'] = float(speeds_a.mean())
+        impact['arrival_pressure'] = float(rho_debris * speeds_a.max()**2 / 2 / 1000)
+        impact['n_particles_arrived'] = int(in_r_a.sum())
+        impact['front_concentration'] = float(conc_data[arrival_frame, mask_a][in_r_a].mean()) if has_conc else 0.0
+        impact['flow_depth'] = float(height_data[arrival_frame, mask_a][in_r_a].mean()) if has_height else 0.0
+
+        # 유동 방향 분석 (도달 시점)
+        arrived_vx = vx_a[in_r_a]
+        arrived_vy = vy_a[in_r_a]
+        arrived_speed = np.sqrt(arrived_vx**2 + arrived_vy**2)
+        moving_mask = arrived_speed > 0.1
+        if moving_mask.any():
+            mean_vx_a = float(np.mean(arrived_vx[moving_mask]))
+            mean_vy_a = float(np.mean(arrived_vy[moving_mask]))
+        else:
+            mean_vx_a = float(np.mean(arrived_vx))
+            mean_vy_a = float(np.mean(arrived_vy))
+        impact['flow_bearing'] = float(np.degrees(np.arctan2(mean_vx_a, mean_vy_a)) % 360)
+        init_to_target_x = target_x_local - (init_x - x_min)
+        init_to_target_y = target_y_local - (init_y - y_min)
+        impact['target_bearing'] = float(np.degrees(np.arctan2(init_to_target_x, init_to_target_y)) % 360)
+
+        if peak_speed_frame is not None:
+            mask_p = ~np.isnan(x_data[peak_speed_frame])
+            px_p, py_p = x_data[peak_speed_frame, mask_p], y_data[peak_speed_frame, mask_p]
+            vx_p, vy_p = vx_data[peak_speed_frame, mask_p], vy_data[peak_speed_frame, mask_p]
+            dist_p = np.sqrt((px_p - target_x_local)**2 + (py_p - target_y_local)**2)
+            in_r_p = dist_p <= radius
+            speeds_p = np.sqrt(vx_p[in_r_p]**2 + vy_p[in_r_p]**2)
+            impact['peak_time'] = float(times[peak_speed_frame])
+            impact['peak_speed'] = float(speeds_p.max())
+            impact['peak_mean_speed'] = float(speeds_p.mean())
+            impact['peak_pressure'] = float(rho_debris * speeds_p.max()**2 / 2 / 1000)
+            impact['peak_n_particles'] = int(in_r_p.sum())
+            impact['peak_concentration'] = float(conc_data[peak_speed_frame, mask_p][in_r_p].mean()) if has_conc else 0.0
+            impact['peak_flow_depth'] = float(height_data[peak_speed_frame, mask_p][in_r_p].mean()) if has_height else 0.0
+
+        last_frame = len(times) - 1
+        mask_f = ~np.isnan(x_data[last_frame])
+        if mask_f.any():
+            px_f, py_f = x_data[last_frame, mask_f], y_data[last_frame, mask_f]
+            dist_f = np.sqrt((px_f - target_x_local)**2 + (py_f - target_y_local)**2)
+            in_r_f = dist_f <= radius
+            if in_r_f.any():
+                speeds_f = np.sqrt(vx_data[last_frame, mask_f][in_r_f]**2 + vy_data[last_frame, mask_f][in_r_f]**2)
+                impact['final_speed'] = float(speeds_f.mean())
+                impact['final_n_particles'] = int(in_r_f.sum())
+                impact['final_flow_depth'] = float(height_data[last_frame, mask_f][in_r_f].mean()) if has_height else 0.0
+            else:
+                impact['final_speed'] = 0.0
+                impact['final_n_particles'] = 0
+                impact['final_flow_depth'] = 0.0
+    else:
+        impact['arrival_time'] = None
+        impact['head_speed'] = 0.0
+        impact['front_mean_speed'] = 0.0
+        impact['arrival_pressure'] = 0.0
+        impact['front_concentration'] = 0.0
+        impact['flow_depth'] = 0.0
+        impact['n_particles_arrived'] = 0
+        impact['closest_distance'] = min_closest_dist if min_closest_dist < float('inf') else None
+
+        # 유동 방향 분석 - closest_frame 시점의 선두 입자들 기준
+        if closest_frame is not None:
+            impact['closest_time'] = float(times[closest_frame])
+
+            # 1차 판정: 접근/이탈 - 최근접 시점 이후 거리가 벌어졌는지 확인
+            receding = False
+            last_frame_idx = len(times) - 1
+            if closest_frame < last_frame_idx:
+                mask_end = ~np.isnan(x_data[last_frame_idx])
+                if mask_end.any():
+                    px_end = x_data[last_frame_idx, mask_end]
+                    py_end = y_data[last_frame_idx, mask_end]
+                    dist_end_min = float(np.sqrt((px_end - target_x_local)**2 + (py_end - target_y_local)**2).min())
+                    if dist_end_min > min_closest_dist + 20:
+                        receding = True
+
+            mask_c = ~np.isnan(x_data[closest_frame])
+            if mask_c.any():
+                px_c = x_data[closest_frame, mask_c]
+                py_c = y_data[closest_frame, mask_c]
+                vx_c = vx_data[closest_frame, mask_c]
+                vy_c = vy_data[closest_frame, mask_c]
+
+                # 타겟에 가장 가까운 상위 10% 입자 선택
+                dists_c = np.sqrt((px_c - target_x_local)**2 + (py_c - target_y_local)**2)
+                n_front = max(1, int(len(dists_c) * 0.1))
+                front_idx = np.argsort(dists_c)[:n_front]
+
+                # 선두 입자 → 타겟 방향 벡터
+                to_target_x = target_x_local - px_c[front_idx]
+                to_target_y = target_y_local - py_c[front_idx]
+                to_target_mag = np.sqrt(to_target_x**2 + to_target_y**2)
+                to_target_mag = np.maximum(to_target_mag, 1e-6)
+
+                # 선두 입자 속도 벡터
+                front_vx = vx_c[front_idx]
+                front_vy = vy_c[front_idx]
+                front_speed = np.sqrt(front_vx**2 + front_vy**2)
+
+                # 타겟 방향 성분 (dot product → cosine)
+                cos_angle = (front_vx * to_target_x + front_vy * to_target_y) / (
+                    np.maximum(front_speed, 1e-6) * to_target_mag)
+
+                avg_cos = float(np.mean(cos_angle))
+                pct_toward = float((cos_angle > 0.3).sum() / len(cos_angle) * 100)
+
+                # 방향 판정 - 이탈 우선, pct_toward 동시 검증
+                if receding:
+                    flow_relation = "타겟 인근을 통과 후 이탈 중"
+                elif avg_cos > 0.5 and pct_toward > 30:
+                    flow_relation = "타겟 방향으로 직접 이동 중"
+                elif avg_cos > 0.0 and pct_toward > 10:
+                    flow_relation = "타겟 방향으로 비스듬히 이동 중"
+                elif avg_cos > -0.3:
+                    flow_relation = "타겟 측면을 지나가는 중"
+                else:
+                    flow_relation = "타겟 반대 방향으로 이동"
+
+                impact['flow_direction'] = flow_relation
+                impact['flow_toward_pct'] = pct_toward
+
+    return impact
+
+
+def _analyze_area_target(target, times, x_data, y_data, vx_data, vy_data,
+                          conc_data, height_data, x_min, y_min, rho_debris,
+                          init_x=0, init_y=0):
+    """영역(area) 타겟 분석 - bounding box 방식"""
+    name = target.get('name', '미상')
+    address = target.get('address', '')
+    bldg_type = target.get('structure_type', target.get('type', 'mixed'))
+    bbox = target.get('bbox', [0, 0, 0, 0])  # [x_min, y_min, x_max, y_max] EPSG:5186
+
+    has_conc = conc_data is not None
+    has_height = height_data is not None
+
+    # bbox → 로컬 좌표
+    bx_min = bbox[0] - x_min
+    by_min = bbox[1] - y_min
+    bx_max = bbox[2] - x_min
+    by_max = bbox[3] - y_min
+    bbox_area = (bbox[2] - bbox[0]) * (bbox[3] - bbox[1])  # m²
+
+    arrival_frame = None
+    peak_speed_frame = None
+    peak_speed_val = 0.0
+    max_particles_in_bbox = 0
+    max_particles_frame = None
+
+    # 최근접 거리 추적 (미도달 시 사용)
+    min_closest_dist = float('inf')
+    closest_frame = None
+
+    for i in range(len(times)):
+        mask = ~np.isnan(x_data[i])
+        if not mask.any():
+            continue
+        px = x_data[i, mask]
+        py = y_data[i, mask]
+
+        # bbox 내 입자 체크
+        in_bbox = (px >= bx_min) & (px <= bx_max) & (py >= by_min) & (py <= by_max)
+
+        if in_bbox.any():
+            if arrival_frame is None:
+                arrival_frame = i
+
+            n_in = int(in_bbox.sum())
+            if n_in > max_particles_in_bbox:
+                max_particles_in_bbox = n_in
+                max_particles_frame = i
+
+            vx = vx_data[i, mask][in_bbox]
+            vy = vy_data[i, mask][in_bbox]
+            speeds = np.sqrt(vx**2 + vy**2)
+            frame_max_speed = float(speeds.max())
+            if frame_max_speed > peak_speed_val:
+                peak_speed_val = frame_max_speed
+                peak_speed_frame = i
+        else:
+            # bbox까지 최근접 거리 계산
+            dx = np.maximum(bx_min - px, np.maximum(0, px - bx_max))
+            dy = np.maximum(by_min - py, np.maximum(0, py - by_max))
+            dists = np.sqrt(dx**2 + dy**2)
+            frame_min_dist = float(dists.min())
+            if frame_min_dist < min_closest_dist:
+                min_closest_dist = frame_min_dist
+                closest_frame = i
+
+    impact = {
+        'name': name, 'address': address, 'type': bldg_type,
+        'target_type': 'area',
+        'bbox': bbox, 'bbox_area': bbox_area,
+        'reached': arrival_frame is not None,
+    }
+
+    if arrival_frame is not None:
+        # === 도달 시점 분석 ===
+        mask_a = ~np.isnan(x_data[arrival_frame])
+        px_a, py_a = x_data[arrival_frame, mask_a], y_data[arrival_frame, mask_a]
+        in_bbox_a = (px_a >= bx_min) & (px_a <= bx_max) & (py_a >= by_min) & (py_a <= by_max)
+        vx_a = vx_data[arrival_frame, mask_a][in_bbox_a]
+        vy_a = vy_data[arrival_frame, mask_a][in_bbox_a]
+        speeds_a = np.sqrt(vx_a**2 + vy_a**2)
+
+        impact['arrival_time'] = float(times[arrival_frame])
+        impact['head_speed'] = float(speeds_a.max())
+        impact['front_mean_speed'] = float(speeds_a.mean())
+        impact['arrival_pressure'] = float(rho_debris * speeds_a.max()**2 / 2 / 1000)
+        impact['n_particles_arrived'] = int(in_bbox_a.sum())
+        impact['front_concentration'] = float(conc_data[arrival_frame, mask_a][in_bbox_a].mean()) if has_conc else 0.0
+        impact['flow_depth'] = float(height_data[arrival_frame, mask_a][in_bbox_a].mean()) if has_height else 0.0
+
+        # 유동 방향 분석 (도달 시점)
+        arrived_speed_a = np.sqrt(vx_a**2 + vy_a**2)
+        moving_mask_a = arrived_speed_a > 0.1
+        if moving_mask_a.any():
+            mean_vx_a = float(np.mean(vx_a[moving_mask_a]))
+            mean_vy_a = float(np.mean(vy_a[moving_mask_a]))
+        else:
+            mean_vx_a = float(np.mean(vx_a))
+            mean_vy_a = float(np.mean(vy_a))
+        impact['flow_bearing'] = float(np.degrees(np.arctan2(mean_vx_a, mean_vy_a)) % 360)
+        target_cx = (bx_min + bx_max) / 2
+        target_cy = (by_min + by_max) / 2
+        init_to_target_x = target_cx - (init_x - x_min)
+        init_to_target_y = target_cy - (init_y - y_min)
+        impact['target_bearing'] = float(np.degrees(np.arctan2(init_to_target_x, init_to_target_y)) % 360)
+
+        # === 최대 충격 시점 ===
+        if peak_speed_frame is not None:
+            mask_p = ~np.isnan(x_data[peak_speed_frame])
+            px_p, py_p = x_data[peak_speed_frame, mask_p], y_data[peak_speed_frame, mask_p]
+            in_bbox_p = (px_p >= bx_min) & (px_p <= bx_max) & (py_p >= by_min) & (py_p <= by_max)
+            speeds_p = np.sqrt(vx_data[peak_speed_frame, mask_p][in_bbox_p]**2 +
+                                vy_data[peak_speed_frame, mask_p][in_bbox_p]**2)
+            impact['peak_time'] = float(times[peak_speed_frame])
+            impact['peak_speed'] = float(speeds_p.max())
+            impact['peak_mean_speed'] = float(speeds_p.mean())
+            impact['peak_pressure'] = float(rho_debris * speeds_p.max()**2 / 2 / 1000)
+            impact['peak_n_particles'] = int(in_bbox_p.sum())
+            impact['peak_concentration'] = float(conc_data[peak_speed_frame, mask_p][in_bbox_p].mean()) if has_conc else 0.0
+            impact['peak_flow_depth'] = float(height_data[peak_speed_frame, mask_p][in_bbox_p].mean()) if has_height else 0.0
+
+        # === 최대 범람 시점 (가장 많은 입자 진입) ===
+        if max_particles_frame is not None:
+            impact['max_coverage_time'] = float(times[max_particles_frame])
+            impact['max_coverage_particles'] = max_particles_in_bbox
+            n_total = int((~np.isnan(x_data[max_particles_frame])).sum())
+            impact['max_coverage_ratio'] = max_particles_in_bbox / max(n_total, 1)
+
+        # === 최종 상태 ===
+        last_frame = len(times) - 1
+        mask_f = ~np.isnan(x_data[last_frame])
+        if mask_f.any():
+            px_f, py_f = x_data[last_frame, mask_f], y_data[last_frame, mask_f]
+            in_bbox_f = (px_f >= bx_min) & (px_f <= bx_max) & (py_f >= by_min) & (py_f <= by_max)
+            if in_bbox_f.any():
+                speeds_f = np.sqrt(vx_data[last_frame, mask_f][in_bbox_f]**2 +
+                                    vy_data[last_frame, mask_f][in_bbox_f]**2)
+                impact['final_speed'] = float(speeds_f.mean())
+                impact['final_n_particles'] = int(in_bbox_f.sum())
+                impact['final_flow_depth'] = float(height_data[last_frame, mask_f][in_bbox_f].mean()) if has_height else 0.0
+            else:
+                impact['final_speed'] = 0.0
+                impact['final_n_particles'] = 0
+                impact['final_flow_depth'] = 0.0
+
+    else:
+        # 미도달 - 최근접 거리 및 도달 가능성 추정
+        impact['arrival_time'] = None
+        impact['head_speed'] = 0.0
+        impact['front_mean_speed'] = 0.0
+        impact['arrival_pressure'] = 0.0
+        impact['front_concentration'] = 0.0
+        impact['flow_depth'] = 0.0
+        impact['n_particles_arrived'] = 0
+        impact['closest_distance'] = min_closest_dist if min_closest_dist < float('inf') else None
+
+        # 도달 가능성 추정: 마지막 프레임의 속도와 최근접 거리로 판단
+        if closest_frame is not None:
+            last_frame = len(times) - 1
+            mask_last = ~np.isnan(x_data[last_frame])
+            if mask_last.any():
+                speeds_last = np.sqrt(vx_data[last_frame, mask_last]**2 + vy_data[last_frame, mask_last]**2)
+                avg_speed_last = float(speeds_last.mean())
+                max_speed_last = float(speeds_last.max())
+                impact['final_avg_speed'] = avg_speed_last
+                impact['final_max_speed'] = max_speed_last
+
+                # 감속 추세 분석 (마지막 20% 구간)
+                t80_idx = int(len(times) * 0.8)
+                mask_80 = ~np.isnan(x_data[t80_idx])
+                if mask_80.any():
+                    speeds_80 = np.sqrt(vx_data[t80_idx, mask_80]**2 + vy_data[t80_idx, mask_80]**2)
+                    avg_speed_80 = float(speeds_80.mean())
+                    dt_segment = times[last_frame] - times[t80_idx]
+                    if dt_segment > 0:
+                        decel = (avg_speed_80 - avg_speed_last) / dt_segment  # m/s²
+                        impact['deceleration'] = decel
+                        # 등감속 가정 시 추가 이동 가능 거리: v²/(2a)
+                        if decel > 0.001:
+                            remaining_dist = avg_speed_last**2 / (2 * decel)
+                            impact['estimated_remaining_travel'] = remaining_dist
+                            impact['will_likely_reach'] = remaining_dist > min_closest_dist
+                            # 도달 예상 시간 추정 (v/a 초 후 정지)
+                            if remaining_dist > min_closest_dist and avg_speed_last > 0.1:
+                                # v² = v0² - 2*a*d → t = (v0 - sqrt(v0²-2ad))/a
+                                v0 = avg_speed_last
+                                d = min_closest_dist
+                                discriminant = v0**2 - 2 * decel * d
+                                if discriminant > 0:
+                                    t_reach = (v0 - np.sqrt(discriminant)) / decel
+                                    impact['estimated_arrival_time'] = float(times[last_frame] + t_reach)
+                        else:
+                            # 거의 감속 없음 → 등속 가정
+                            impact['estimated_remaining_travel'] = float('inf')
+                            impact['will_likely_reach'] = True
+                            if avg_speed_last > 0.1:
+                                impact['estimated_arrival_time'] = float(times[last_frame] + min_closest_dist / avg_speed_last)
+
+            # 유동 방향 분석 - closest_frame 시점의 선두 입자들 기준
+            impact['closest_time'] = float(times[closest_frame])
+
+            # 1차 판정: 접근/이탈 - 최근접 시점 이후 거리가 벌어졌는지 확인
+            receding = False
+            last_frame_idx = len(times) - 1
+            if closest_frame < last_frame_idx:
+                mask_end = ~np.isnan(x_data[last_frame_idx])
+                if mask_end.any():
+                    px_end = x_data[last_frame_idx, mask_end]
+                    py_end = y_data[last_frame_idx, mask_end]
+                    dx_end = np.maximum(bx_min - px_end, np.maximum(0, px_end - bx_max))
+                    dy_end = np.maximum(by_min - py_end, np.maximum(0, py_end - by_max))
+                    dist_end_min = float(np.sqrt(dx_end**2 + dy_end**2).min())
+                    if dist_end_min > min_closest_dist + 20:
+                        receding = True
+
+            mask_c = ~np.isnan(x_data[closest_frame])
+            if mask_c.any():
+                px_c = x_data[closest_frame, mask_c]
+                py_c = y_data[closest_frame, mask_c]
+                vx_c = vx_data[closest_frame, mask_c]
+                vy_c = vy_data[closest_frame, mask_c]
+
+                # 타겟 중심 (로컬 좌표)
+                target_cx = (bx_min + bx_max) / 2
+                target_cy = (by_min + by_max) / 2
+
+                # 타겟에 가장 가까운 상위 10% 입자 선택
+                dx_c = np.maximum(bx_min - px_c, np.maximum(0, px_c - bx_max))
+                dy_c = np.maximum(by_min - py_c, np.maximum(0, py_c - by_max))
+                dists_c = np.sqrt(dx_c**2 + dy_c**2)
+                n_front = max(1, int(len(dists_c) * 0.1))
+                front_idx = np.argsort(dists_c)[:n_front]
+
+                # 선두 입자 → 타겟 방향 벡터
+                to_target_x = target_cx - px_c[front_idx]
+                to_target_y = target_cy - py_c[front_idx]
+                to_target_mag = np.sqrt(to_target_x**2 + to_target_y**2)
+                to_target_mag = np.maximum(to_target_mag, 1e-6)
+
+                # 선두 입자 속도 벡터
+                front_vx = vx_c[front_idx]
+                front_vy = vy_c[front_idx]
+                front_speed = np.sqrt(front_vx**2 + front_vy**2)
+
+                # 타겟 방향 성분 (dot product → cosine)
+                cos_angle = (front_vx * to_target_x + front_vy * to_target_y) / (
+                    np.maximum(front_speed, 1e-6) * to_target_mag)
+
+                avg_cos = float(np.mean(cos_angle))
+                pct_toward = float((cos_angle > 0.3).sum() / len(cos_angle) * 100)
+
+                # 방향 판정 - 이탈 우선, pct_toward 동시 검증
+                if receding:
+                    flow_relation = "타겟 인근을 통과 후 이탈 중"
+                elif avg_cos > 0.5 and pct_toward > 30:
+                    flow_relation = "타겟 방향으로 직접 이동 중"
+                elif avg_cos > 0.0 and pct_toward > 10:
+                    flow_relation = "타겟 방향으로 비스듬히 이동 중"
+                elif avg_cos > -0.3:
+                    flow_relation = "타겟 측면을 지나가는 중"
+                else:
+                    flow_relation = "타겟 반대 방향으로 이동"
+
+                impact['flow_direction'] = flow_relation
+                impact['flow_toward_pct'] = pct_toward
+
+    return impact
+
+
+def analyze_impact_at_targets(data, config_info: dict) -> list:
+    """대상별 충격 분석 - 건물(점) 또는 영역(bbox) 방식 지원
+
+    Returns:
+        list[dict]: 각 대상에 대한 충격 분석 결과
+    """
+    targets = []
+    if 'simulation' in config_info and 'targets' in config_info['simulation']:
+        targets = config_info['simulation']['targets']
+
+    if not targets:
+        return []
+
+    times = data['times']
+    x_data = data['x']
+    y_data = data['y']
+    vx_data = data['vx']
+    vy_data = data['vy']
+
+    x_min = float(data['x_min'])
+    y_min = float(data['y_min'])
+    init_x = float(data['init_x']) if 'init_x' in data.files else 0
+    init_y = float(data['init_y']) if 'init_y' in data.files else 0
+
+    has_conc = 'concentration' in data.files
+    conc_data = data['concentration'] if has_conc else None
+    has_height = 'height' in data.files
+    height_data = data['height'] if has_height else None
+
+    rho_debris = 2000  # kg/m³
+
+    results = []
+    for target in targets:
+        target_type = target.get('target_type', 'building')
+        if target_type == 'area':
+            result = _analyze_area_target(
+                target, times, x_data, y_data, vx_data, vy_data,
+                conc_data, height_data, x_min, y_min, rho_debris,
+                init_x, init_y)
+        else:
+            result = _analyze_building_target(
+                target, times, x_data, y_data, vx_data, vy_data,
+                conc_data, height_data, x_min, y_min, rho_debris,
+                init_x, init_y)
+        results.append(result)
+
+    return results
+
+
+def format_impact_at_targets(target_impacts: list) -> str:
+    """건물별 충격 분석 결과를 마크다운 테이블로 포맷팅"""
+    if not target_impacts:
+        return "대상 건물 정보 없음"
+
+    # 건물 유형별 피해 판정
+    def assess_damage(bldg_type: str, pressure_kpa: float) -> str:
+        if bldg_type == 'wood':
+            if pressure_kpa >= 20:
+                return "붕괴"
+            elif pressure_kpa >= 10:
+                return "심각손상"
+            elif pressure_kpa >= 5:
+                return "중간손상"
+            else:
+                return "경미"
+        elif bldg_type == 'masonry':
+            if pressure_kpa >= 20:
+                return "붕괴"
+            elif pressure_kpa >= 10:
+                return "심각손상"
+            elif pressure_kpa >= 5:
+                return "중간손상"
+            else:
+                return "경미"
+        elif bldg_type == 'RC':
+            if pressure_kpa >= 100:
+                return "심각손상"
+            elif pressure_kpa >= 30:
+                return "중간손상"
+            elif pressure_kpa >= 10:
+                return "경미손상"
+            else:
+                return "경미"
+        else:
+            if pressure_kpa >= 20:
+                return "심각"
+            elif pressure_kpa >= 10:
+                return "중간"
+            else:
+                return "경미"
+
+    lines = [
+        "| 대상명 | 유형 | 도달시간 | 도달속도 | 충격압력 | 농도 | 유동심 | 판정 |",
+        "|--------|------|---------|---------|---------|------|-------|------|"
+    ]
+
+    for t in target_impacts:
+        ttype = "영역" if t.get('target_type') == 'area' else "건물"
+        if not t['reached']:
+            # 미도달 시 추가 정보
+            extra = ""
+            if t.get('closest_distance') is not None:
+                extra = f" (최근접 {t['closest_distance']:.0f}m"
+                if t.get('will_likely_reach') is True:
+                    extra += f", 도달 예상 ~{t.get('estimated_arrival_time', 0):.0f}초"
+                elif t.get('will_likely_reach') is False:
+                    extra += ", 도달 전 정지 예상"
+                extra += ")"
+            lines.append(f"| {t['name']} | {ttype} | 미도달{extra} | - | - | - | - | 안전 |")
+        else:
+            pressure = t.get('peak_pressure', t['arrival_pressure'])
+            speed = t.get('peak_speed', t['head_speed'])
+            damage = assess_damage(t['type'], pressure)
+            lines.append(
+                f"| {t['name']} | {ttype} | {t['arrival_time']:.1f}초 "
+                f"| {speed:.1f} m/s "
+                f"| {pressure:.1f} kPa "
+                f"| {t['front_concentration']:.0%} "
+                f"| {t['flow_depth']:.2f} m "
+                f"| {damage} |"
+            )
+
+    return "\n".join(lines)
+
+
 def load_config_info(work_dir: Path) -> dict:
     """설정 파일에서 정보 로드"""
     info = {}
@@ -251,7 +834,9 @@ def format_velocity_by_distance(velocity_data: dict) -> str:
     return "\n".join(lines)
 
 
-def get_llm_analysis(stats: SimulationStats, data, config_info: dict, velocity_by_distance: dict = None) -> Optional[str]:
+def get_llm_analysis(stats: SimulationStats, data, config_info: dict,
+                     velocity_by_distance: dict = None,
+                     target_impacts: list = None) -> Optional[str]:
     """Anthropic API를 사용한 LLM 분석"""
     if not HAS_ANTHROPIC:
         print("  [WARN] anthropic 패키지가 설치되지 않음. pip install anthropic")
@@ -331,8 +916,82 @@ def get_llm_analysis(stats: SimulationStats, data, config_info: dict, velocity_b
 - **최대 도달 거리(Head)**: {stats.runout_head_final:.1f}m
 - **평균 도달 거리(Centroid)**: {stats.runout_centroid_final:.1f}m
 
-### 5. 이동거리별 속도/농도 분석 (핵심 데이터)
+### 5. 대상별 충격 분석 (핵심 데이터)
+{format_impact_at_targets(target_impacts) if target_impacts else "대상 건물/영역 정보 없음"}
+"""
+    # 대상별 상세 정보 추가
+    if target_impacts:
+        for t in target_impacts:
+            ttype_str = "영역" if t.get('target_type') == 'area' else "건물"
+            type_labels = {'RC': '철근콘크리트', 'wood': '목조', 'masonry': '조적조', 'mixed': '혼합구조'}
+            type_label = type_labels.get(t['type'], t['type'])
+            prompt_data += f"""
+#### {t['name']} ({ttype_str})
+- **주소**: {t['address']}
+- **구조 유형**: {t['type']} ({type_label})
+"""
+            if t.get('target_type') == 'area' and 'bbox' in t:
+                bbox = t['bbox']
+                prompt_data += f"- **영역 범위**: ({bbox[0]},{bbox[1]}) ~ ({bbox[2]},{bbox[3]}) EPSG:5186, 면적 {t.get('bbox_area', 0):.0f}m²\n"
+            elif 'coordinates' in t:
+                prompt_data += f"- **좌표**: ({t['coordinates'][0]}, {t['coordinates'][1]}) EPSG:5186\n"
+
+            if t['reached']:
+                prompt_data += f"""- **도달 여부**: 도달 (최초 도달: {t['arrival_time']:.1f}초)
+- **도달 시 Head 속도**: {t['head_speed']:.1f} m/s
+- **도달 시 전방부 평균속도**: {t['front_mean_speed']:.1f} m/s
+- **도달 시 충격압력**: {t['arrival_pressure']:.1f} kPa
+- **도달 시 토사 농도**: {t['front_concentration']:.0%}
+- **도달 시 유동심**: {t['flow_depth']:.2f} m
+- **도달 입자 수**: {t['n_particles_arrived']}개
+"""
+                if 'peak_pressure' in t:
+                    prompt_data += f"""- **최대 충격 시점**: {t['peak_time']:.1f}초
+- **최대 충격 속도**: {t['peak_speed']:.1f} m/s
+- **최대 충격압력**: {t['peak_pressure']:.1f} kPa
+- **최대 충격 시 유동심**: {t.get('peak_flow_depth', 0):.2f} m
+"""
+                if 'max_coverage_particles' in t:
+                    prompt_data += f"""- **최대 범람 시점**: {t['max_coverage_time']:.1f}초 ({t['max_coverage_particles']}개 입자, 전체의 {t['max_coverage_ratio']:.0%})
+"""
+                if 'final_speed' in t:
+                    prompt_data += f"""- **최종 상태 평균 속도**: {t['final_speed']:.1f} m/s
+- **최종 상태 잔류 입자 수**: {t['final_n_particles']}개
+- **최종 상태 유동심**: {t.get('final_flow_depth', 0):.2f} m
+"""
+                if t.get('flow_bearing') is not None:
+                    prompt_data += f"- **유동 방위**: {t['flow_bearing']:.0f}° (시작점→타겟: {t.get('target_bearing', 0):.0f}°)\n"
+            else:
+                prompt_data += "- **도달 여부**: 미도달 (시뮬레이션 시간 내 영향권 도달 안 함)\n"
+                if t.get('closest_distance') is not None:
+                    prompt_data += f"- **최근접 거리**: {t['closest_distance']:.0f}m\n"
+                if t.get('final_avg_speed') is not None:
+                    prompt_data += f"- **시뮬레이션 종료 시 평균 속도**: {t['final_avg_speed']:.2f} m/s\n"
+                if t.get('deceleration') is not None:
+                    prompt_data += f"- **감속률**: {t['deceleration']:.3f} m/s² (마지막 20% 구간)\n"
+                if t.get('estimated_remaining_travel') is not None:
+                    est = t['estimated_remaining_travel']
+                    prompt_data += f"- **등감속 가정 추가 이동 가능 거리**: {est:.0f}m\n"
+                if t.get('will_likely_reach') is not None:
+                    if t['will_likely_reach']:
+                        prompt_data += f"- **도달 가능성**: 도달 예상 (추정 도달시간 ~{t.get('estimated_arrival_time', 0):.0f}초)\n"
+                    else:
+                        prompt_data += "- **도달 가능성**: 도달 전 정지 예상 (추가 이동 거리 < 최근접 거리)\n"
+                if t.get('flow_direction'):
+                    prompt_data += f"- **유동 방향 판정**: {t['flow_direction']}\n"
+                    prompt_data += f"- **타겟 방향 이동 비율**: {t['flow_toward_pct']:.0f}%\n"
+                    if t.get('closest_time') is not None:
+                        prompt_data += f"- **최근접 도달 시점**: {t['closest_time']:.1f}초 (시뮬레이션 종료: {stats.duration:.0f}초)\n"
+
+    prompt_data += f"""
+### 6. 이동거리별 속도/농도 분석 (보조 데이터)
 {format_velocity_by_distance(velocity_by_distance) if velocity_by_distance else "데이터 없음"}
+
+### 건물 피해 판정 기준 (참고)
+- **목조/조적조**: 붕괴 ~20kPa, 심각손상 ~10kPa
+- **철근콘크리트(RC)**: 심각손상 ~100kPa, 중간손상 ~30kPa, 경미손상 ~10kPa
+- **차량 전복**: ~10kPa
+- **보행자 사망**: ~5kPa
 
 ## 시뮬레이션 신뢰성 정보
 - 시뮬레이션 길이: {"**짧음** (전체 산사태 거동 미반영)" if is_short_simulation else "적정 (120초 이상)"}
@@ -345,27 +1004,32 @@ def get_llm_analysis(stats: SimulationStats, data, config_info: dict, velocity_b
 
 1. **위험도 평가 요약** (2-3문단)
    - 토석류 유속({stats.max_speed:.1f}m/s)과 농도({stats.concentration_final:.0%}) 기반 종합 위험 평가
-   - 충격압력({impact_pressure:.1f}kPa) 기준 구조물 피해 예상
+   - 충격압력 기준 구조물 피해 예상
    - 도달거리({stats.runout_head_final:.0f}m) 기준 영향권 평가
 
-2. **주거지역 피해 예상** (위 "이동거리별 속도/농도 분석" 테이블 활용 필수!)
-   - **중요**: 위 테이블의 각 거리(100m, 200m, 300m...)별 속도/농도 데이터를 인용하여 분석
-   - 예: "300m 지점 도달 시 Head 속도 X.X m/s, 충격압력 YY kPa로 목조건물 붕괴 가능"
-   - 예: "500m 지점(주거지역 추정)에서는 속도가 X.X m/s로 감소하여 OO 수준 피해 예상"
-   - 각 거리별 피해 유형:
-     * 목조/조적조 주택: 어느 거리까지 붕괴 위험?
-     * 철근콘크리트 아파트: 어느 거리에서 저층부 피해?
-     * 주차 차량: 어느 거리까지 전복/매몰?
-     * 보행자: 어느 거리까지 사망 위험?
-   - 토사 농도 변화에 따른 매몰 깊이 추정
+2. **대상별 피해 예상** (위 "대상별 충격 분석" 데이터 활용 필수!)
+   - **중요**: 각 건물/영역의 이름과 주소를 명시적으로 언급하여 분석
+   - 예(건물): "서울대학교 제2공학관(302동)에 XX초 후 토석류 도달, 충격압력 YY kPa로 OO 수준 피해 예상"
+   - 예(영역): "구룡마을 영역에 토석류가 XX초 후 진입, 최대 N개 입자 도달로 광범위 침수 위험"
+   - 각 대상별로:
+     * 도달 시간 및 대피 가능 시간
+     * 충격압력 기반 구조물 피해 수준 (위 판정 기준 참고)
+     * 토사 농도와 유동심 기반 매몰 위험
+     * 인명피해 가능성
+   - 미도달 대상은: 최근접 거리, 도달 가능성 추정, 감속 추세를 반드시 언급
+   - **중요**: 유동 방향 데이터를 반드시 활용하세요. "타겟 방향으로 직접 이동 중"이면 실제 위협,
+     "반대 방향으로 이동"이면 현 시나리오에서는 안전하다고 명시.
+     단순히 거리가 가깝다고 위험하다고 판단하면 안 됩니다.
+   - 이동거리별 데이터도 보조적으로 활용하여 일반 지역 피해 분석
 
 3. **대피 권고사항**
+   - 각 건물별 대피 시간 (도달 시간 기준)
    - 위험 반경 설정 (도달거리 + 안전여유)
-   - 대피 시간 (유속 기반 도달 시간)
    - 대피 불가 지역 설정
 
 4. **재해 예방 권고사항** (실행 가능한 조치)
    - 즉시 조치 사항 (경보, 대피, 통제)
+   - 건물별 맞춤 대책 (보강, 방호벽 등)
    - 중장기 대책 (구조물 보강, 사방댐 등)
 
 5. **데이터 신뢰성 안내**
@@ -374,6 +1038,7 @@ def get_llm_analysis(stats: SimulationStats, data, config_info: dict, velocity_b
 **작성 지침:**
 - 전문 용어 최소화, 쉬운 표현 사용
 - 구체적인 수치와 함께 그 의미를 **일반인이 이해할 수 있도록** 상세히 설명
+- **건물 이름과 주소를 반드시 명시**하여 독자가 어떤 건물인지 즉시 파악 가능하도록
 - 각 섹션별로 충분히 상세하게 작성 (전체 1500-2000자)
 - 위험도 평가는 근거와 함께 구체적으로
 - 피해 범위는 실제 피해 유형별로 상세히 (속도/농도 수치 인용)
@@ -381,11 +1046,30 @@ def get_llm_analysis(stats: SimulationStats, data, config_info: dict, velocity_b
 - Markdown 형식, 한국어로 작성
 """
 
+    system_prompt = """당신은 대한민국 한국지질자원연구원 소속 산사태 재해 위험 분석 전문가입니다.
+
+핵심 원칙:
+1. **데이터 기반 판단만**: 제공된 시뮬레이션 수치 데이터에만 근거하여 분석합니다.
+   데이터에 없는 내용은 절대 추측하거나 지어내지 마십시오.
+2. **유동 방향 중시**: 토석류가 타겟 방향으로 이동하는지, 반대/측면으로 이동하는지가
+   피해 판정의 핵심입니다. 단순 거리만으로 위험도를 판단하지 마십시오.
+3. **보수적 판단**: 불확실할 경우 안전 측으로 판단하되, 데이터가 명확히
+   "미도달" 또는 "반대 방향"을 가리키면 과장하지 마십시오.
+4. **구체적 수치 인용**: 모든 판단에 근거 수치를 반드시 함께 제시합니다.
+5. **시뮬레이션 한계 명시**: SPH 시뮬레이션의 불확실성(지형 해상도, 강우 미반영,
+   초기조건 민감도 등)을 적절히 언급합니다.
+
+작성 스타일:
+- 한국어, 공무원 보고서 형식
+- 전문 용어 사용 시 괄호 안에 쉬운 설명 병기
+- 위험도는 5단계: 매우높음/높음/보통/낮음/매우낮음"""
+
     try:
         client = anthropic.Anthropic(api_key=api_key)
         message = client.messages.create(
             model=model,
             max_tokens=4000,
+            system=system_prompt,
             messages=[
                 {"role": "user", "content": prompt_data}
             ]
@@ -1066,7 +1750,8 @@ def create_particle_distribution_plot(data) -> str:
 
 
 def generate_html_report(data, stats: SimulationStats, config_info: dict,
-                         work_dir: Path, llm_analysis: Optional[str] = None) -> str:
+                         work_dir: Path, llm_analysis: Optional[str] = None,
+                         target_impacts: list = None) -> str:
     """HTML 형식 보고서 생성 (간소화 버전)"""
 
     # 프로젝트 이름
@@ -1119,6 +1804,102 @@ def generate_html_report(data, stats: SimulationStats, config_info: dict,
         llm_html = re.sub(r'^- (.+)$', r'<li>\1</li>', llm_html, flags=re.MULTILINE)
         llm_html = llm_html.replace('\n\n', '</p><p>').replace('\n', '<br>')
         llm_html = f'<p>{llm_html}</p>'
+
+    # 대상별 충격 분석 HTML 생성
+    impact_cards_html = ""
+    if target_impacts:
+        type_labels = {'RC': '철근콘크리트', 'wood': '목조', 'masonry': '조적조', 'mixed': '혼합구조'}
+        cards = []
+        for t in target_impacts:
+            type_label = type_labels.get(t['type'], t['type'])
+            ttype_label = "영역" if t.get('target_type') == 'area' else "건물"
+            if t['reached']:
+                pressure = t.get('peak_pressure', t['arrival_pressure'])
+                speed = t.get('peak_speed', t['head_speed'])
+                # 피해 판정 색상
+                if t['type'] == 'RC':
+                    if pressure >= 100:
+                        dmg_text, dmg_color = "심각손상", "#c53030"
+                    elif pressure >= 30:
+                        dmg_text, dmg_color = "중간손상", "#dd6b20"
+                    elif pressure >= 10:
+                        dmg_text, dmg_color = "경미손상", "#d69e2e"
+                    else:
+                        dmg_text, dmg_color = "경미", "#38a169"
+                else:
+                    if pressure >= 20:
+                        dmg_text, dmg_color = "붕괴", "#c53030"
+                    elif pressure >= 10:
+                        dmg_text, dmg_color = "심각손상", "#dd6b20"
+                    elif pressure >= 5:
+                        dmg_text, dmg_color = "중간손상", "#d69e2e"
+                    else:
+                        dmg_text, dmg_color = "경미", "#38a169"
+
+                card = f"""<div style="border:1px solid #e2e8f0; border-radius:10px; padding:20px; margin-bottom:15px; border-left:5px solid {dmg_color};">
+                    <h3 style="color:#1a365d; margin-bottom:5px;">{t['name']} <span style="font-size:0.7em; color:#888;">({ttype_label})</span></h3>
+                    <p style="color:#666; font-size:0.85em; margin-bottom:15px;">{t['address']} | {type_label}</p>
+                    <div class="grid grid-4" style="gap:10px;">
+                        <div style="text-align:center; padding:10px; background:#f7fafc; border-radius:8px;">
+                            <span style="font-size:1.5em; font-weight:bold; color:#e53e3e;">{t['arrival_time']:.1f}</span><br>
+                            <span style="font-size:0.8em; color:#666;">도달시간 (초)</span>
+                        </div>
+                        <div style="text-align:center; padding:10px; background:#f7fafc; border-radius:8px;">
+                            <span style="font-size:1.5em; font-weight:bold; color:#dd6b20;">{speed:.1f}</span><br>
+                            <span style="font-size:0.8em; color:#666;">최대속도 (m/s)</span>
+                        </div>
+                        <div style="text-align:center; padding:10px; background:#f7fafc; border-radius:8px;">
+                            <span style="font-size:1.5em; font-weight:bold; color:#c53030;">{pressure:.1f}</span><br>
+                            <span style="font-size:0.8em; color:#666;">충격압력 (kPa)</span>
+                        </div>
+                        <div style="text-align:center; padding:10px; background:#f7fafc; border-radius:8px;">
+                            <span style="font-size:1.5em; font-weight:bold; color:{dmg_color};">{dmg_text}</span><br>
+                            <span style="font-size:0.8em; color:#666;">피해 판정</span>
+                        </div>
+                    </div>
+                    <div style="margin-top:12px; display:flex; gap:15px; flex-wrap:wrap; font-size:0.9em; color:#555;">
+                        <span>농도: {t['front_concentration']:.0%}</span>
+                        <span>유동심: {t['flow_depth']:.2f}m</span>
+                        <span>도달입자: {t['n_particles_arrived']}개</span>
+                        {"<span>최종잔류: " + str(t.get('final_n_particles', 0)) + "개</span>" if 'final_n_particles' in t else ""}
+                    </div>
+                </div>"""
+            else:
+                # 미도달 카드 - 도달 가능성 추정 포함
+                extra_info = ""
+                border_color = "#38a169"  # 기본 안전 (녹색)
+                status_text = "시뮬레이션 시간 내 토석류 미도달 (안전)"
+
+                if t.get('closest_distance') is not None:
+                    extra_info += f'<span>최근접 거리: {t["closest_distance"]:.0f}m</span>'
+                if t.get('final_avg_speed') is not None:
+                    extra_info += f'<span>종료 시 평균속도: {t["final_avg_speed"]:.1f} m/s</span>'
+                if t.get('deceleration') is not None:
+                    extra_info += f'<span>감속률: {t["deceleration"]:.3f} m/s²</span>'
+
+                if t.get('will_likely_reach') is True:
+                    border_color = "#dd6b20"  # 주의 (주황)
+                    est_time = t.get('estimated_arrival_time', 0)
+                    status_text = f'미도달이나 <b>도달 가능성 높음</b> (추정 도달시간 ~{est_time:.0f}초)'
+                elif t.get('will_likely_reach') is False:
+                    status_text = '미도달 - 감속 추세로 <b>도달 전 정지 예상</b>'
+
+                card = f"""<div style="border:1px solid #e2e8f0; border-radius:10px; padding:20px; margin-bottom:15px; border-left:5px solid {border_color};">
+                    <h3 style="color:#1a365d; margin-bottom:5px;">{t['name']} <span style="font-size:0.7em; color:#888;">({ttype_label})</span></h3>
+                    <p style="color:#666; font-size:0.85em; margin-bottom:10px;">{t['address']} | {type_label}</p>
+                    <p style="color:{border_color}; font-weight:bold; margin-bottom:8px;">{status_text}</p>
+                    {"<div style='display:flex; gap:15px; flex-wrap:wrap; font-size:0.9em; color:#555;'>" + extra_info + "</div>" if extra_info else ""}
+                </div>"""
+            cards.append(card)
+
+        impact_cards_html = f"""
+        <div class="section">
+            <h2>대상별 충격 분석</h2>
+            <p style="margin-bottom:15px; color:#555;">
+                시뮬레이션 결과를 기반으로 각 대상 건물/영역에 대한 토석류 도달 시점, 충격 요인, 피해 수준을 분석합니다.
+            </p>
+            {''.join(cards)}
+        </div>"""
 
     html = f"""<!DOCTYPE html>
 <html lang="ko">
@@ -1196,6 +1977,9 @@ def generate_html_report(data, stats: SimulationStats, config_info: dict,
 
         <!-- AI 분석 (최상단 배치) -->
         {"<div class='section analysis-box'><h2>재해 위험 분석</h2>" + llm_html + "</div>" if llm_html else ""}
+
+        <!-- 건물별 충격 분석 -->
+        {impact_cards_html}
 
         <!-- 시뮬레이션 결과 -->
         <div class="section">
@@ -1293,28 +2077,58 @@ def generate_report(results_path: str, use_llm: bool = True):
         if v:
             print(f"  - {dist}m: {v['head_speed']:.1f} m/s (t={v['time']:.1f}s)")
 
+    # 대상별 충격 분석
+    print("Analyzing impact at targets...")
+    target_impacts = analyze_impact_at_targets(data, config_info)
+    for t in target_impacts:
+        ttype = "[영역]" if t.get('target_type') == 'area' else "[건물]"
+        if t['reached']:
+            print(f"  - {ttype} {t['name']}: 도달 {t['arrival_time']:.1f}s, "
+                  f"속도 {t['head_speed']:.1f} m/s, "
+                  f"압력 {t['arrival_pressure']:.1f} kPa")
+        else:
+            extra = ""
+            if t.get('closest_distance') is not None:
+                extra = f" (최근접 {t['closest_distance']:.0f}m"
+                if t.get('will_likely_reach') is True:
+                    extra += f", 도달 예상 ~{t.get('estimated_arrival_time', 0):.0f}s"
+                elif t.get('will_likely_reach') is False:
+                    extra += ", 정지 예상"
+                extra += ")"
+            print(f"  - {ttype} {t['name']}: 미도달{extra}")
+
     # LLM 분석 (옵션)
     llm_analysis = None
     if use_llm:
         print("\nRequesting LLM analysis...")
-        llm_analysis = get_llm_analysis(stats, data, config_info, velocity_by_distance)
+        llm_analysis = get_llm_analysis(stats, data, config_info, velocity_by_distance, target_impacts)
         if llm_analysis:
             print("  LLM analysis received.")
         else:
             print("  LLM analysis skipped.")
 
+    # 좌표 suffix 계산
+    terrain = data['terrain']
+    ny, nx = terrain.shape
+    cell_size = float(data['cell_size'])
+    x_min_geo = float(data['x_min'])
+    y_min_geo = float(data['y_min'])
+    x_center = x_min_geo + (nx * cell_size) / 2
+    y_center = y_min_geo + (ny * cell_size) / 2
+    coord_suffix = f"{x_center:.0f}x{y_center:.0f}"
+
     # Markdown 보고서 생성
     print("\nGenerating Markdown report...")
     report_content = generate_markdown_report(data, stats, config_info, work_dir, llm_analysis)
-    report_md_path = work_dir / "analysis_report.md"
+    report_md_path = work_dir / f"analysis_report_{coord_suffix}.md"
     with open(report_md_path, 'w', encoding='utf-8') as f:
         f.write(report_content)
     print(f"  Markdown: {report_md_path}")
 
     # HTML 보고서 생성
     print("\nGenerating HTML report...")
-    html_content = generate_html_report(data, stats, config_info, work_dir, llm_analysis)
-    report_html_path = work_dir / "analysis_report.html"
+    html_content = generate_html_report(data, stats, config_info, work_dir, llm_analysis, target_impacts)
+    report_html_path = work_dir / f"analysis_report_{coord_suffix}.html"
     with open(report_html_path, 'w', encoding='utf-8') as f:
         f.write(html_content)
     print(f"  HTML: {report_html_path}")

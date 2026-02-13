@@ -38,8 +38,7 @@ DEFAULT_CONFIG = {
     'particle_height_offset': 30,
     'use_satellite': True,
     'terrain_cmap': 'terrain',
-    'animation_gif': 'landslide_animation.gif',
-    'animation_video': 'landslide_animation.webm',
+    # animation_gif, animation_video: 자동 생성 (landslide_(좌표).gif/.webm)
 }
 
 
@@ -89,10 +88,11 @@ def render_frame(data_path: str, frame_idx: int, frame_data_idx: int,
     y = np.arange(ny) * cell_size
     X, Y = np.meshgrid(x, y)
 
-    # StructuredGrid 생성 - DEM X,Y축 모두 뒤집기 (terrain_processor preview와 일치)
+    # StructuredGrid 생성 - 정방향 좌표계 (X→동, Y→북)
+    # npz의 terrain은 SPH 엔진에서 이미 변환됨 (row 0=남, row 증가=북)
     grid = pv.StructuredGrid()
-    terrain_flipped = terrain[::-1, ::-1]  # Y축, X축 모두 뒤집기
-    points = np.column_stack([X.ravel(), Y.ravel(), terrain_flipped.ravel()])
+    terrain_display = terrain
+    points = np.column_stack([X.ravel(), Y.ravel(), terrain_display.ravel()])
     grid.points = points
     grid.dimensions = [nx, ny, 1]
 
@@ -107,26 +107,27 @@ def render_frame(data_path: str, frame_idx: int, frame_data_idx: int,
             img_array = np.array(img)
             texture = pv.numpy_to_texture(img_array)
 
-            # 텍스처 좌표 - U, V축 모두 뒤집기 (terrain_processor preview와 일치)
-            u = np.linspace(1, 0, nx)  # X축 뒤집기에 맞춰 U축도 뒤집기
-            v = np.linspace(1, 0, ny)
+            # 텍스처 좌표 - 정방향 매핑
+            # VTK: (u=0,v=0)=이미지 좌하단(SW), (u=1,v=1)=이미지 우상단(NE)
+            u = np.linspace(0, 1, nx)  # 서→동
+            v = np.linspace(0, 1, ny)  # 남→북
             U_tex, V_tex = np.meshgrid(u, v)
             grid.active_texture_coordinates = np.c_[U_tex.ravel(), V_tex.ravel()]
         except Exception:
             texture = None
 
-    # 입자 데이터 - X,Y축 모두 뒤집기 (DEM/텍스처와 일치시키기)
+    # 입자 데이터
     mask = ~np.isnan(x_data[frame_data_idx])
     px_orig = x_data[frame_data_idx, mask]
     py_orig = y_data[frame_data_idx, mask]
     vx = vx_data[frame_data_idx, mask]
     vy = vy_data[frame_data_idx, mask]
 
-    # 입자 좌표 X,Y축 모두 뒤집기 (terrain_processor preview와 일치)
-    max_x = (nx - 1) * cell_size
-    max_y = (ny - 1) * cell_size
-    px = max_x - px_orig  # X 뒤집기
-    py = max_y - py_orig  # Y 뒤집기
+    # 입자 좌표 - 정방향 (뒤집기 없음)
+    # px_orig = geo_x - x_min (동쪽으로 증가)
+    # py_orig = geo_y - y_min (북쪽으로 증가)
+    px = px_orig
+    py = py_orig
 
     # 입자 고도 계산
     height_offset = render_config.get('particle_height_offset', DEFAULT_CONFIG['particle_height_offset'])
@@ -138,10 +139,10 @@ def render_frame(data_path: str, frame_idx: int, frame_data_idx: int,
         col1 = np.minimum(col0 + 1, nx - 1)
         row1 = np.minimum(row0 + 1, ny - 1)
         wx, wy = col - col0, row - row0
-        pz = (terrain_flipped[row0, col0] * (1 - wx) * (1 - wy) +
-              terrain_flipped[row0, col1] * wx * (1 - wy) +
-              terrain_flipped[row1, col0] * (1 - wx) * wy +
-              terrain_flipped[row1, col1] * wx * wy)
+        pz = (terrain_display[row0, col0] * (1 - wx) * (1 - wy) +
+              terrain_display[row0, col1] * wx * (1 - wy) +
+              terrain_display[row1, col0] * (1 - wx) * wy +
+              terrain_display[row1, col1] * wx * wy)
         pz = pz + height_offset
 
         speed = np.sqrt(vx**2 + vy**2)
@@ -183,6 +184,67 @@ def render_frame(data_path: str, frame_idx: int, frame_data_idx: int,
             diffuse=0.5,
         )
 
+    # ── 타겟 bbox 마커 ──
+    targets = render_config.get('targets', [])
+    for target in targets:
+        bbox = target.get('bbox_local')
+        if not bbox:
+            continue
+        # bbox_local = [x0, y0, x1, y1] in local coords
+        x0, y0_b, x1, y1_b = bbox
+        # clip to terrain bounds
+        max_x = (nx - 1) * cell_size
+        max_y = (ny - 1) * cell_size
+        x0 = max(0, min(x0, max_x))
+        x1 = max(0, min(x1, max_x))
+        y0_b = max(0, min(y0_b, max_y))
+        y1_b = max(0, min(y1_b, max_y))
+
+        # skip degenerate bbox (collapsed to zero area after clipping)
+        if x1 - x0 < 1e-3 or y1_b - y0_b < 1e-3:
+            continue
+
+        # 4 corners → terrain height via bilinear interpolation
+        corners_xy = [(x0, y0_b), (x1, y0_b), (x1, y1_b), (x0, y1_b)]
+        corners_3d = []
+        for cx, cy in corners_xy:
+            col_f = np.clip(cx / cell_size, 0, nx - 1.001)
+            row_f = np.clip(cy / cell_size, 0, ny - 1.001)
+            c0, r0 = int(col_f), int(row_f)
+            c1_, r1_ = min(c0 + 1, nx - 1), min(r0 + 1, ny - 1)
+            wx_, wy_ = col_f - c0, row_f - r0
+            z = (terrain_display[r0, c0] * (1 - wx_) * (1 - wy_) +
+                 terrain_display[r0, c1_] * wx_ * (1 - wy_) +
+                 terrain_display[r1_, c0] * (1 - wx_) * wy_ +
+                 terrain_display[r1_, c1_] * wx_ * wy_)
+            corners_3d.append([cx, cy, float(z) + 10])
+
+        # 4 edges as tubes
+        for i_edge in range(4):
+            p1 = corners_3d[i_edge]
+            p2 = corners_3d[(i_edge + 1) % 4]
+            line = pv.Line(p1, p2)
+            tube = line.tube(radius=3.0)
+            plotter.add_mesh(tube, color='red', ambient=0.8)
+
+        # label at center
+        cx_label = (x0 + x1) / 2
+        cy_label = (y0_b + y1_b) / 2
+        col_f = np.clip(cx_label / cell_size, 0, nx - 1.001)
+        row_f = np.clip(cy_label / cell_size, 0, ny - 1.001)
+        c0, r0 = int(col_f), int(row_f)
+        c1_, r1_ = min(c0 + 1, nx - 1), min(r0 + 1, ny - 1)
+        wx_, wy_ = col_f - c0, row_f - r0
+        z_label = (terrain_display[r0, c0] * (1 - wx_) * (1 - wy_) +
+                   terrain_display[r0, c1_] * wx_ * (1 - wy_) +
+                   terrain_display[r1_, c0] * (1 - wx_) * wy_ +
+                   terrain_display[r1_, c1_] * wx_ * wy_)
+        label_pt = pv.PolyData([[cx_label, cy_label, float(z_label) + 50]])
+        plotter.add_point_labels(
+            label_pt, [target.get('name', '')],
+            font_size=14, text_color='red', point_size=0, shape=None,
+            always_visible=True)
+
     # Colorbar 추가
     plotter.add_scalar_bar(
         title='Speed (m/s)',
@@ -207,10 +269,12 @@ def render_frame(data_path: str, frame_idx: int, frame_data_idx: int,
     camera_factor = render_config.get('camera_distance_factor', DEFAULT_CONFIG['camera_distance_factor'])
     distance = max_range * camera_factor
 
-    # 북쪽이 하단 정면에 오도록
-    cam_x = center[0]
-    cam_y = center[1] - distance * 0.8
-    cam_z = center[2] + distance * 0.5
+    # 카메라 고도각/방위각 적용
+    elev = np.radians(render_config.get('view_elev', DEFAULT_CONFIG['view_elev']))
+    azim = np.radians(render_config.get('view_azim', DEFAULT_CONFIG['view_azim']))
+    cam_x = center[0] + distance * np.cos(elev) * np.sin(azim)
+    cam_y = center[1] - distance * np.cos(elev) * np.cos(azim)
+    cam_z = center[2] + distance * np.sin(elev)
     plotter.camera_position = [(cam_x, cam_y, cam_z), center, (0, 0, 1)]
 
     # 제목
@@ -317,10 +381,42 @@ def create_animation(data_path: str, output_dir: Path, vis_config: dict,
                 log(f"  Satellite texture: {Path(satellite_file).name}")
                 break
 
+    # 좌표 suffix 계산
+    cell_size = float(data['cell_size'])
+    x_min_geo = float(data['x_min'])
+    y_min_geo = float(data['y_min'])
+    x_center = x_min_geo + (nx * cell_size) / 2
+    y_center = y_min_geo + (ny * cell_size) / 2
+    coord_suffix = f"{x_center:.0f}x{y_center:.0f}"
+
+    # simulation_config.yaml에서 targets 로드
+    targets_for_render = []
+    sim_config_path = output_dir / 'simulation_config.yaml'
+    if sim_config_path.exists():
+        with open(sim_config_path, 'r', encoding='utf-8') as f:
+            sim_config = yaml.safe_load(f) or {}
+        for t in sim_config.get('targets', []):
+            info = {'name': t.get('name', '')}
+            if t.get('target_type') == 'area' and t.get('bbox'):
+                b = t['bbox']
+                info['bbox_local'] = [
+                    b[0] - x_min_geo, b[1] - y_min_geo,
+                    b[2] - x_min_geo, b[3] - y_min_geo
+                ]
+            elif t.get('coordinates'):
+                c = t['coordinates']
+                r = t.get('proximity_radius', 30)
+                info['bbox_local'] = [
+                    c[0] - r - x_min_geo, c[1] - r - y_min_geo,
+                    c[0] + r - x_min_geo, c[1] + r - y_min_geo
+                ]
+            targets_for_render.append(info)
+
     # 렌더링 설정 구성
     render_config = {
         'speed_max': speed_max,
         'satellite_file': satellite_file,
+        'targets': targets_for_render,
         **vis_config
     }
 
@@ -409,15 +505,13 @@ def create_animation(data_path: str, output_dir: Path, vis_config: dict,
         output_fps = vis_config.get('fps', DEFAULT_CONFIG['fps'])
 
         # GIF 저장
-        gif_filename = vis_config.get('animation_gif', DEFAULT_CONFIG['animation_gif'])
-        gif_path = output_dir / gif_filename
+        gif_path = output_dir / f"landslide_{coord_suffix}.gif"
         log(f"Saving GIF to {gif_path} (fps={output_fps})...")
         iio.imwrite(str(gif_path), frames, fps=output_fps, loop=0)
         log("GIF saved!")
 
         # 비디오 저장 (imageio-ffmpeg 내장 바이너리 사용)
-        video_filename = vis_config.get('animation_video', DEFAULT_CONFIG['animation_video'])
-        video_path = output_dir / video_filename
+        video_path = output_dir / f"landslide_{coord_suffix}.webm"
         log(f"Saving video to {video_path} (fps={output_fps})...")
         try:
             import imageio_ffmpeg

@@ -1,0 +1,44 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Temporary files (editor/tool artifacts)
+*.tmp.*
+nul
+
+# Generated simulation outputs
+simulation_results.npz
+*.npz
+landslide_animation.gif
+landslide_animation.webm
+analysis_report.html
+analysis_report.md
+
+# Large data files
+*.dem
+*.npy
+*.zip
+
+# Large images (generated)
+satellite_image.png
+satellite_texture.png
+satellite_texture_grid.png
+entrainment_*.png
+runout_distance.png
+landslide_3d_*.gif
+landslide_3d_*.png
+irwon_*.png
+irwon_*.gif
+
+# Project output directories (contain large generated data)
+guryoung_dem_10m*/
+gwanak_dem*/
+backup/
+
+# Claude Code local settings
+.claude/settings.local.json
+
+# IDE
+.vscode/
+.idea/

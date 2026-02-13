@@ -140,6 +140,8 @@ class SPHSimulatorGPU:
             C_init: Initial solid concentration
             C_max: Maximum packing concentration
         """
+        # DEM row 0=북 → row 0=남으로 변환 (SPH local_y=0=남과 일치)
+        terrain = terrain[::-1]
         self.terrain = terrain.astype(np.float32)
         self.terrain_grid = cp.asarray(self.terrain)
         self.cell_size = cell_size

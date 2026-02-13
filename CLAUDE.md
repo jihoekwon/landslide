@@ -64,6 +64,53 @@ landslide/
     └── landslide_animation.gif
 ```
 
+## Data Sources (외부 데이터 파이프라인)
+
+### 1. DEM 지형 데이터
+- **소스**: Copernicus COP30 GLO-30 (OpenTopography API)
+- **해상도**: ~30m 전역, terrain_processor에서 리샘플링 가능
+- **API**: `https://portal.opentopography.org/API/globaldem`
+- **인증**: `OPENTOPO_API_KEY` 환경변수 또는 `report_config.yaml` / `simulation_config.yaml`에 설정
+- **대안**: 사용자 제공 GeoTIFF (예: 국토지리정보원 5m DEM)
+- **좌표계**: EPSG:5186 (Korea 2000 / Central Belt)로 변환하여 사용
+
+### 2. 위성 이미지
+- **소스**: ArcGIS World Imagery REST API
+- **URL**: `https://services.arcgisonline.com/arcgis/rest/services/World_Imagery/MapServer/export`
+- **최대 해상도**: 4096x4096 픽셀
+- **좌표 변환**: EPSG:5186 → EPSG:3857 (Web Mercator) via pyproj
+- **인증**: 불필요 (공개 API)
+
+### 3. 타겟 건물/영역 좌표
+- **현재 방식**: 수동 추정값. 정확한 지오코딩 파이프라인 미구축 상태
+- **자동 지오코딩 미지원** (향후 Kakao/Naver Maps Geocoding API 연동 필요)
+
+#### 현재 좌표 입력 방법 (정확도 낮음)
+- **건물**: 시뮬레이션 영상에서 유동 경로 확인 후 좌표 추정, 또는 지도에서 수동 확인
+- **영역**: 지형 분석(표고/경사) 기반 평탄지 추정 → bbox 설정
+- **주의**: 현재 설정된 좌표는 추정값이며, 정확한 건물/행정구역 위치와 차이가 있을 수 있음
+
+#### 정확한 좌표 확인 방법 (권장)
+1. **주소 → 좌표 변환 (지오코딩)**:
+   - Kakao Maps API: `https://dapi.kakao.com/v2/local/search/address`
+   - Naver Maps API: `https://naveropenapi.apigw.ntruss.com/map-geocode/v2/geocode`
+   - 결과: WGS84 (위도, 경도)
+2. **WGS84 → EPSG:5186 변환**:
+   ```python
+   from pyproj import Transformer
+   t = Transformer.from_crs("EPSG:4326", "EPSG:5186", always_xy=True)
+   x, y = t.transform(lon, lat)  # (경도, 위도) → (x, y)
+   ```
+3. **영역 경계 (행정구역)**:
+   - 국가공간정보포털 (data.nsdi.go.kr): 행정구역 경계 SHP
+   - 브이월드 (vworld.kr): 건물/필지 WFS/WMS
+   - SGIS (sgis.kostat.go.kr): 통계지리정보 경계
+
+### 4. LLM 분석
+- **소스**: Anthropic Claude API
+- **모델**: `claude-sonnet-4-20250514` (기본) 또는 `claude-opus-4-20250514`
+- **인증**: `report_config.yaml`의 `llm.api_key`
+
 ## Config Files
 
 ### simulation_config.yaml
@@ -73,9 +120,30 @@ landslide/
 - `rheology`: mu_b, xi, tau_y, mu
 - `entrainment`: delta_e, delta_d, phi_bed, C_init
 - `simulation`: duration, save_interval
+- `targets`: 피해 대상 건물/영역 정보 (아래 참조)
+
+### simulation_config.yaml - targets 섹션
+
+```yaml
+# 건물 타겟 (점 + 반경)
+targets:
+  - name: "서울대학교 제2공학관(302동)"
+    target_type: "building"          # 기본값, 생략 가능
+    coordinates: [195800, 538700]    # EPSG:5186
+    address: "서울특별시 관악구 관악로 1 서울대학교 302동"
+    type: "RC"                       # RC, wood, masonry
+    proximity_radius: 30             # 영향권 반경 (m)
+
+  # 영역 타겟 (bounding box)
+  - name: "구룡마을"
+    target_type: "area"
+    address: "서울 강남구 양재대로 478 구룡마을 8지구"
+    structure_type: "mixed"          # mixed, RC, wood, masonry
+    bbox: [205700, 541900, 206100, 542200]  # [x_min, y_min, x_max, y_max] EPSG:5186
+```
 
 ### visualization_config.yaml
-- `view_elev`, `view_azim`: 카메라 각도
+- `view_elev`, `view_azim`: 카메라 각도 (기본: 70, 0)
 - `fps`, `frame_skip`: 애니메이션 설정
 - `particle_cmap`: 컬러맵 (plasma, viridis 등)
 
